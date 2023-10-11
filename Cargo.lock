@@ -88,20 +88,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fcaabb2fef8c910e7f4c7ce9f67a1283a1715879a7c230ca9d6d1ae31f16d91"
 
 [[package]]
+name = "jw"
+version = "0.1.0"
+dependencies = [
+ "jwalk",
+ "rayon",
+]
+
+[[package]]
 name = "jwalk"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2735847566356cd2179a2a38264839308f7079fa96e6bd5a42d740460e003c56"
 dependencies = [
  "crossbeam",
- "rayon",
-]
-
-[[package]]
-name = "jwalk-ls"
-version = "0.1.0"
-dependencies = [
- "jwalk",
  "rayon",
 ]
 
