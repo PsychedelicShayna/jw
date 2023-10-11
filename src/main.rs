@@ -202,14 +202,13 @@ fn main() {
     } else {
         results = traversem!(directories.iter(), verbose_mode, enable_stats, filter);
     }
+    let elapsed_time = start_time.elapsed();
 
     if !verbose_mode {
         for result in &results {
             println!("{}", result);
         }
     }
-
-    let elapsed_time = start_time.elapsed();
 
     if enable_stats {
         let file_counter = file_counter.lock();
