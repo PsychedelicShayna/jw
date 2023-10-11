@@ -218,7 +218,12 @@ fn main() {
             (Ok(fc), Ok(dc)) => {
                 let count_message = match filter {
                     Filter::Everything => {
-                        format!("{} files and {} directories", fc, dc)
+                        format!(
+                            "{} paths total, {} files and {} directories",
+                            *fc + *dc,
+                            *fc,
+                            *dc
+                        )
                     }
                     Filter::FilesOnly => format!("{} files", results.len()),
                     Filter::DirsOnly => format!("{} directories", results.len()),
