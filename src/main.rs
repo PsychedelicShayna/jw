@@ -61,6 +61,10 @@ fn traverse(
                         if !path.is_dir() {
                             return None;
                         }
+                    } else if let Filter::OtherOnly = filter {
+                        if path.is_dir() || path.is_file() {
+                            return None;
+                        }
                     }
 
                     if count_stats {
@@ -134,12 +138,14 @@ Options:
     -s,  --stats       Show statistics about the traversal at the end.
     -of, --only-files  Only show files in the output.
     -od, --only-dirs   Only show directories in the output.
+    -oo, --only-other  Only show entries that aren't files or directories.
     -   --             Read directories from stdin.";
 
 #[derive(Clone, Copy)]
 enum Filter {
     FilesOnly,
     DirsOnly,
+    OtherOnly,
     Everything,
 }
 
@@ -156,6 +162,7 @@ fn main() {
 
     let mut file_filter = false;
     let mut directory_filter = false;
+    let mut other_filter = false;
 
     for arg in arguments {
         match arg.as_str() {
@@ -170,6 +177,7 @@ fn main() {
 
             "--only-files" | "-of" => file_filter = true,
             "--only-dirs" | "-od" => directory_filter = true,
+            "--only-other" | "-oo" => other_filter = true,
 
             directory => {
                 if !options_over {
@@ -186,11 +194,12 @@ fn main() {
         }
     }
 
-    let filter = match (file_filter, directory_filter) {
-        (true, false) => Filter::FilesOnly,
-        (false, true) => Filter::DirsOnly,
-        (false, false) => Filter::Everything,
-        (true, true) => {
+    let filter = match (file_filter, directory_filter, other_filter) {
+        (false, false, false) => Filter::Everything,
+        (true, false, false) => Filter::FilesOnly,
+        (false, true, false) => Filter::DirsOnly,
+        (false, false, true) => Filter::OtherOnly,
+        (_, _, _) => {
             eprintln!("Cannot use both --only-files and --only-dirs at the same time. Provide neither to allow both.");
             std::process::exit(1);
         }
@@ -279,6 +288,9 @@ fn main() {
                     Filter::FilesOnly => format!("{} files", total_count),
                     Filter::DirsOnly => {
                         format!("{} directories", total_count)
+                    }
+                    Filter::OtherOnly => {
+                        format!("{} misc", total_count)
                     }
                 };
 
