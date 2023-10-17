@@ -5,6 +5,37 @@ use std::{
     time::Instant,
 };
 
+fn prettify_int(num: u64) -> String {
+    if num < 1000 {
+        return num.to_string();
+    }
+    let mut chunks_of_three = Vec::<String>::new();
+    let mut chunk_buffer = String::new();
+
+    let mut digits = num.to_string();
+
+    while digits.len() % 3 != 0 {
+        let digit = digits.remove(0);
+        chunk_buffer.push(digit);
+    }
+
+    if !chunk_buffer.is_empty() {
+        chunks_of_three.push(chunk_buffer.clone());
+        chunk_buffer.clear();
+    }
+
+    for digit in digits.chars() {
+        chunk_buffer.push(digit);
+
+        if chunk_buffer.len() >= 3 {
+            chunks_of_three.push(chunk_buffer.clone());
+            chunk_buffer.clear();
+        }
+    }
+
+    chunks_of_three.join(",").to_string()
+}
+
 fn traverse(
     dir_path: &String,
     realtime_print: bool,
@@ -12,6 +43,7 @@ fn traverse(
     filter: Filter,
     file_counter: Arc<Mutex<u64>>,
     dir_counter: Arc<Mutex<u64>>,
+    other_counter: Arc<Mutex<u64>>,
 ) -> Vec<String> {
     WalkDir::new(dir_path)
         .into_iter()
@@ -45,6 +77,14 @@ fn traverse(
                                 Ok(mut n) => *n += 1,
                                 Err(e) => eprintln!(
                                     "Failed to increment arc mutex counter for counting directories, error: {}",
+                                    e
+                                ),
+                            }
+                        } else {
+                            match other_counter.lock() {
+                                Ok(mut n) => *n += 1,
+                                Err(e) => eprintln!(
+                                    "Failed to increment arc mutex counter for counting other miscellaneous file types, error: {}",
                                     e
                                 ),
                             }
@@ -89,7 +129,7 @@ const HELP_MESSAGE: &'static str = "
 Usage: jls [options] [directories]\n
 Options:
     -h,  --help        The message you're viewing right now.
-    -v,  --verbose     Print each path as it is traversed.
+    -R,  --realtime    Print each path as soon as possible in realtime, rather than waiting to collect them all.
     -r,  --rayon       Enable the use of parallel processing, at the cost of performance.
     -s,  --stats       Show statistics about the traversal at the end.
     -of, --only-files  Only show files in the output.
@@ -105,7 +145,7 @@ enum Filter {
 
 fn main() {
     let arguments = std::env::args().skip(1);
-    let mut verbose_mode: bool = false;
+    let mut realtime_output: bool = false;
 
     let mut directories = Vec::<String>::new();
     let mut stdin_mode: bool = false;
@@ -124,7 +164,7 @@ fn main() {
                 std::process::exit(0);
             }
 
-            "--verbose" | "-v" if !options_over => verbose_mode = true,
+            "--verbose" | "-v" if !options_over => realtime_output = true,
             "--rayon" | "-r" if !options_over => enable_rayon = true,
             "--stats" | "-s" if !options_over => enable_stats = true,
 
@@ -136,7 +176,7 @@ fn main() {
                     options_over = true;
                 }
 
-                if directory == "--" {
+                if matches!(directory, "--" | "-") {
                     stdin_mode = true;
                     break;
                 } else {
@@ -171,8 +211,7 @@ fn main() {
 
     let file_counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
     let dir_counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
-
-    let results: Vec<_>;
+    let other_counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
 
     macro_rules! traversem {
         ($iterator:expr, $verbose:expr, $stats:expr, $filter:expr) => {
@@ -185,6 +224,7 @@ fn main() {
                         $filter,
                         file_counter.clone(),
                         dir_counter.clone(),
+                        other_counter.clone(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -197,14 +237,20 @@ fn main() {
 
     let start_time = Instant::now();
 
-    if enable_rayon {
-        results = traversem!(directories.par_iter(), verbose_mode, enable_stats, filter);
+    let results: Vec<String> = if enable_rayon {
+        traversem!(
+            directories.par_iter(),
+            realtime_output,
+            enable_stats,
+            filter
+        )
     } else {
-        results = traversem!(directories.iter(), verbose_mode, enable_stats, filter);
-    }
+        traversem!(directories.iter(), realtime_output, enable_stats, filter)
+    };
+
     let elapsed_time = start_time.elapsed();
 
-    if !verbose_mode {
+    if !realtime_output {
         for result in &results {
             println!("{}", result);
         }
@@ -213,31 +259,38 @@ fn main() {
     if enable_stats {
         let file_counter = file_counter.lock();
         let dir_counter = dir_counter.lock();
+        let other_counter = other_counter.lock();
 
-        match (file_counter, dir_counter) {
-            (Ok(fc), Ok(dc)) => {
+        match (file_counter, dir_counter, other_counter) {
+            (Ok(fc), Ok(dc), Ok(oc)) => {
+                let file_count = prettify_int(*fc);
+                let dir_count = prettify_int(*dc);
+                let other_count = prettify_int(*oc);
+
+                let total_count = prettify_int(results.len() as u64);
+
                 let count_message = match filter {
                     Filter::Everything => {
                         format!(
-                            "{} paths total, {} files and {} directories",
-                            *fc + *dc,
-                            *fc,
-                            *dc
+                            "{} paths total, {} files, {} directories, and {} other",
+                            total_count, file_count, dir_count, other_count
                         )
                     }
-                    Filter::FilesOnly => format!("{} files", results.len()),
-                    Filter::DirsOnly => format!("{} directories", results.len()),
+                    Filter::FilesOnly => format!("{} files", total_count),
+                    Filter::DirsOnly => {
+                        format!("{} directories", total_count)
+                    }
                 };
 
                 println!(
                     "\nFinished traversing {} root directories, collecting {} in {} seconds.",
-                    &directories.len(),
+                    directories.len(),
                     count_message,
                     elapsed_time.as_secs_f64()
                 );
             }
 
-            (_, _) => {
+            (_, _, _) => {
                 eprintln!("Failed to acquire mutex lock for counting files and directories.");
                 std::process::exit(1);
             }
