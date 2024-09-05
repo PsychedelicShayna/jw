@@ -40,12 +40,14 @@ fn traverse(
     dir_path: &String,
     realtime_print: bool,
     count_stats: bool,
+    skip_hidden: bool,
     filter: Filter,
     file_counter: Arc<Mutex<u64>>,
     dir_counter: Arc<Mutex<u64>>,
     other_counter: Arc<Mutex<u64>>,
 ) -> Vec<String> {
     WalkDir::new(dir_path)
+        .skip_hidden(skip_hidden)
         .into_iter()
         .filter_map(|e| {
             match &e {
@@ -130,16 +132,17 @@ fn read_stdin() -> Vec<String> {
 }
 
 const HELP_MESSAGE: &'static str = "
-Usage: jls [options] [directories]\n
+Usage: jw [options] [directories]\n
 Options:
-    -h,  --help        The message you're viewing right now.
-    -R,  --realtime    Print each path as soon as possible in realtime, rather than waiting to collect them all.
-    -r,  --rayon       Enable the use of parallel processing, at the cost of performance.
-    -s,  --stats       Show statistics about the traversal at the end.
-    -of, --only-files  Only show files in the output.
-    -od, --only-dirs   Only show directories in the output.
-    -oo, --only-other  Only show entries that aren't files or directories.
-    -   --             Read directories from stdin.";
+    -h,  --help           The message you're viewing right now.
+    -R,  --realtime       Print each path as soon as possible in realtime, rather than waiting to collect them all.
+    -r,  --rayon          Enable the use of parallel processing, at the cost of performance.
+    -s,  --stats          Show statistics about the traversal at the end.
+    -sh  --skip-hidden    Don't include .hidden files (included by default).
+    -of, --only-files     Only show files in the output.
+    -od, --only-dirs      Only show directories in the output.
+    -oo, --only-other     Only show entries that aren't files or directories.
+    -   --                Read directories from stdin.";
 
 #[derive(Clone, Copy)]
 enum Filter {
@@ -164,6 +167,8 @@ fn main() {
     let mut directory_filter = false;
     let mut other_filter = false;
 
+    let mut skip_hidden: bool = false;
+
     for arg in arguments {
         match arg.as_str() {
             "--help" | "-h" if !options_over => {
@@ -178,6 +183,7 @@ fn main() {
             "--only-files" | "-of" => file_filter = true,
             "--only-dirs" | "-od" => directory_filter = true,
             "--only-other" | "-oo" => other_filter = true,
+            "--skip-hidden" | "-sh" => skip_hidden = false,
 
             directory => {
                 if !options_over {
@@ -223,13 +229,14 @@ fn main() {
     let other_counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
 
     macro_rules! traversem {
-        ($iterator:expr, $verbose:expr, $stats:expr, $filter:expr) => {
+        ($iterator:expr, $verbose:expr, $stats:expr, $skip_hidden:expr, $filter:expr) => {
             $iterator
                 .map(|d| {
                     traverse(
                         d,
                         $verbose,
                         $stats,
+                        $skip_hidden,
                         $filter,
                         file_counter.clone(),
                         dir_counter.clone(),
@@ -251,10 +258,17 @@ fn main() {
             directories.par_iter(),
             realtime_output,
             enable_stats,
+            skip_hidden,
             filter
         )
     } else {
-        traversem!(directories.iter(), realtime_output, enable_stats, filter)
+        traversem!(
+            directories.iter(),
+            realtime_output,
+            enable_stats,
+            skip_hidden,
+            filter
+        )
     };
 
     let elapsed_time = start_time.elapsed();
