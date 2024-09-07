@@ -2,7 +2,7 @@
 
 Are you frustrated with tools like `find`, `fd`, `erd`, `lsd`, `legdur` and others that seem to excel in some areas but fall short in others? I was too, so I built a solution that prioritizes speed and simplicity above all else. The design philosophy of modern tools have a tendency to stray away from the original Linux philosophy of each command doing a single thing, and doing it very well, instead opting to cram as many features in as possible. 
 
-This isn't necessarily a bad thing, I enjoy those features, but there are many times where I want to simply grep every single path from the root of my drive, and that's when those abstractions start backfiring. Colorized output is hard to grep, they take longer to traverse, longer to print, use lazy algorithms because the creator never designed it thinking someone would feed a terrabyte of data to it, and they immediately start dumping results and create terminal I/O bottlenecks.. **enough**
+This isn't necessarily a bad thing, I enjoy those features, but there are many times where I simply want to grep every single path from the root of my drive, and that's when those abstractions start backfiring. All the additional rendering tanks performance, the colorized output sometimes messes up your regex, you pipe it to Neovim and are met with a clusterfuck of ANSI escape codes. Higher level languages that are easier to make pretty CLI/TUIs with being single threaded, the creator never anticipating that someone would feed a terrabyte of data to it, and output immediately starts getting dumped to the terminal creating massive I/O bottlenecks... **enough**
 
 Sometimes you just need to take a page out of the Sesto Elemento's book.
 
