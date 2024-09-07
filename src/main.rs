@@ -1,40 +1,14 @@
-use clap::builder::ArgPredicate;
-use crossbeam_channel::{self, unbounded, Receiver, Sender};
-use jwalk::{DirEntry, WalkDir};
-use sha2::Sha256;
+use clap::{self, value_parser, Arg, ArgAction, Command};
+use crossbeam_channel::unbounded;
+use jwalk::WalkDir;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{atomic, Arc, Condvar, Mutex};
-use std::thread::{self, spawn, JoinHandle, Thread};
+use std::sync::Arc;
+use std::thread::{spawn, JoinHandle};
 use std::time::Duration;
-use std::usize;
-use xxhash_rust::xxh3::Xxh3Default;
 
 #[macro_use]
 pub mod hashutil;
 use hashutil::*;
-
-use anyhow as ah;
-use clap::{self, value_parser, Arg, ArgAction, Args, Command, Parser, Subcommand};
-
-// --live -l
-// --hide -H
-// --checksum -c <algorithm>
-// --depth -d
-// --exclude -x <files,folders>
-
-impl HashAlgorithm {
-    fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "xxh3" => Self::Xxh3,
-            "sha224" => Self::Sha224,
-            "sha256" => Self::Sha256,
-            "sha384" => Self::Sha384,
-            "sha512" => Self::Sha512,
-            "md5" => Self::Md5,
-            _ => panic!("Invalid hash algorithm! '{}'", s),
-        }
-    }
-}
 
 fn read_stdin() -> Vec<String> {
     let stdin = std::io::stdin();
@@ -191,7 +165,7 @@ fn checksum(options: &Options, algorithm: &HashAlgorithm) {
         while !receive_hashes_rx.is_empty() {
             if let Ok(hash) = receive_hashes_rx.recv_timeout(Duration::from_millis(100)) {
                 println!("{}", hash);
-            }         
+            }
         }
     }
 }
@@ -279,7 +253,7 @@ and directly suited for this use case. SHA2/MD5 are only provided for compatibil
         checksum: matches.contains_id("checksum").then(|| {
             matches
                 .get_one::<String>("checksum")
-                .map(|s| HashAlgorithm::from_str(s))
+                .map(HashAlgorithm::from)
                 .unwrap_or(HashAlgorithm::Xxh3)
         }),
         checksum_threads: *matches.get_one("checksum-threads").unwrap_or(&4),
@@ -288,7 +262,7 @@ and directly suited for this use case. SHA2/MD5 are only provided for compatibil
     };
 
     if let Some(algorithm) = &options.checksum {
-        checksum(&options, &algorithm);
+        checksum(&options, algorithm);
     } else {
         traverse(options);
     }

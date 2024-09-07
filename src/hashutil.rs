@@ -1,16 +1,14 @@
-use std::fs::{self, File};
-use std::io::{BufReader, Read, Write};
+use std::fmt::Write;
+use std::fs::File;
+use std::io::{BufReader, Read};
 
-use sha2::digest::Update;
-use xxhash_rust::const_xxh3::xxh3_64 as const_xxh3;
-use xxhash_rust::xxh3::{self, xxh3_128, xxh3_64, Xxh3, Xxh3Default};
+pub use md5::{Context as Md5Context, Digest as Md5Digest};
 
-use sha2::{self, digest, Digest as ShaDigest};
-
-pub use md5::{self, Context as Md5Context, Digest as Md5Digest};
+use sha2::Digest as ShaDigest;
 pub use sha2::{Sha224, Sha256, Sha384, Sha512};
 
-use anyhow as ah;
+pub use xxhash_rust::xxh3::Xxh3Default; // <3
+
 
 #[derive(Debug, Clone)]
 pub enum HashAlgorithm {
@@ -22,20 +20,34 @@ pub enum HashAlgorithm {
     Md5,
 }
 
+impl From<&String> for HashAlgorithm {
+    fn from(s: &String) -> Self {
+        match s.to_lowercase().as_str() {
+            "xxh3" => Self::Xxh3,
+            "sha224" => Self::Sha224,
+            "sha256" => Self::Sha256,
+            "sha384" => Self::Sha384,
+            "sha512" => Self::Sha512,
+            "md5" => Self::Md5,
+            _ => panic!("Invalid hash algorithm! '{}'", s),
+        }
+    }
+}
+
 macro_rules! hash_file {
     ($algo:expr, $path:expr) => {
         match $algo {
-            HashAlgorithm::Xxh3   => hash_file::<Xxh3Default>($path),
+            HashAlgorithm::Xxh3 => hash_file::<Xxh3Default>($path),
             HashAlgorithm::Sha224 => hash_file::<Sha224>($path),
             HashAlgorithm::Sha256 => hash_file::<Sha256>($path),
             HashAlgorithm::Sha384 => hash_file::<Sha384>($path),
             HashAlgorithm::Sha512 => hash_file::<Sha512>($path),
-            HashAlgorithm::Md5    => hash_file::<Md5Context>($path),
+            HashAlgorithm::Md5 => hash_file::<Md5Context>($path),
         }
     };
 }
 
-pub fn hash_file<H: Hasher>(path: &String) -> ah::Result<String> {
+pub fn hash_file<H: Hasher>(path: &String) -> std::io::Result<String> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut buffer = vec![0; 4096];
@@ -143,15 +155,17 @@ impl Hasher for Md5Context {
     }
 }
 
-
 pub fn hexlify(digest: Vec<u8>) -> String {
-    digest.iter().map(|b| format!("{:02x}", b)).collect()
+    digest.iter().fold(String::new(), |mut acc, b| {
+        write!(acc, "{:02x}", b).unwrap();
+        acc
+    })
 }
 
 pub fn get_random_bytes(count: usize) -> Vec<u8> {
     let file = File::open("/dev/urandom").unwrap();
     let mut reader = BufReader::new(file);
     let mut buffer = vec![0; count];
-    reader.read_exact(&mut buffer);
+    let _ = reader.read_exact(&mut buffer);
     buffer
 }

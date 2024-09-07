@@ -6,12 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.86"
 clap = { version = "4.5.17", features = ["derive"] }
 crossbeam-channel = "0.5.13"
 jwalk = "0.8.1"
 md5 = "0.7.0"
-rayon = { version = "1.8.0" }
 sha2 = "0.10.8"
 xxhash-rust = { version = "0.8.12", features = ["xxh3", "const_xxh3"] }
 
