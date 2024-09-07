@@ -1,122 +1,39 @@
-use jwalk::WalkDir;
-use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use std::{
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use clap::builder::ArgPredicate;
+use crossbeam_channel::{self, unbounded, Receiver, Sender};
+use jwalk::{DirEntry, WalkDir};
+use sha2::Sha256;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{atomic, Arc, Condvar, Mutex};
+use std::thread::{self, spawn, JoinHandle, Thread};
+use std::time::Duration;
+use std::usize;
+use xxhash_rust::xxh3::Xxh3Default;
 
-fn prettify_int(num: u64) -> String {
-    if num < 1000 {
-        return num.to_string();
-    }
-    let mut chunks_of_three = Vec::<String>::new();
-    let mut chunk_buffer = String::new();
+#[macro_use]
+pub mod hashutil;
+use hashutil::*;
 
-    let mut digits = num.to_string();
+use anyhow as ah;
+use clap::{self, value_parser, Arg, ArgAction, Args, Command, Parser, Subcommand};
 
-    while digits.len() % 3 != 0 {
-        let digit = digits.remove(0);
-        chunk_buffer.push(digit);
-    }
+// --live -l
+// --hide -H
+// --checksum -c <algorithm>
+// --depth -d
+// --exclude -x <files,folders>
 
-    if !chunk_buffer.is_empty() {
-        chunks_of_three.push(chunk_buffer.clone());
-        chunk_buffer.clear();
-    }
-
-    for digit in digits.chars() {
-        chunk_buffer.push(digit);
-
-        if chunk_buffer.len() >= 3 {
-            chunks_of_three.push(chunk_buffer.clone());
-            chunk_buffer.clear();
+impl HashAlgorithm {
+    fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "xxh3" => Self::Xxh3,
+            "sha224" => Self::Sha224,
+            "sha256" => Self::Sha256,
+            "sha384" => Self::Sha384,
+            "sha512" => Self::Sha512,
+            "md5" => Self::Md5,
+            _ => panic!("Invalid hash algorithm! '{}'", s),
         }
     }
-
-    chunks_of_three.join(",").to_string()
-}
-
-fn traverse(
-    dir_path: &String,
-    realtime_print: bool,
-    count_stats: bool,
-    skip_hidden: bool,
-    filter: Filter,
-    file_counter: Arc<Mutex<u64>>,
-    dir_counter: Arc<Mutex<u64>>,
-    other_counter: Arc<Mutex<u64>>,
-) -> Vec<String> {
-    WalkDir::new(dir_path)
-        .skip_hidden(skip_hidden)
-        .into_iter()
-        .filter_map(|e| {
-            match &e {
-                Ok(e) => {
-                    let path = e.path();
-                    let path_str = path.to_string_lossy().to_string();
-
-                    if let Filter::FilesOnly = filter {
-                        if !path.is_file() {
-                            return None;
-                        }
-                    } else if let Filter::DirsOnly = filter {
-                        if !path.is_dir() {
-                            return None;
-                        }
-                    } else if let Filter::OtherOnly = filter {
-                        if path.is_dir() || path.is_file() {
-                            return None;
-                        }
-                    }
-
-                    if count_stats {
-                        if e.path().is_file() {
-                            match file_counter.lock() {
-                                Ok(mut n) => *n += 1,
-                                Err(e) => eprintln!(
-                                    "Failed to increment arc mutex counter for counting files, error: {}",
-                                    e
-                                ),
-                            }
-                        } else if e.path().is_dir() {
-                            match dir_counter.lock() {
-                                Ok(mut n) => *n += 1,
-                                Err(e) => eprintln!(
-                                    "Failed to increment arc mutex counter for counting directories, error: {}",
-                                    e
-                                ),
-                            }
-                        } else {
-                            match other_counter.lock() {
-                                Ok(mut n) => *n += 1,
-                                Err(e) => eprintln!(
-                                    "Failed to increment arc mutex counter for counting other miscellaneous file types, error: {}",
-                                    e
-                                ),
-                            }
-                        }
-                    }
-
-                    if realtime_print {
-                        println!("{}", path_str);
-                    }
-
-                    Some(path)
-                }
-                Err(_) => None,
-            };
-
-            e.ok().and_then(|e| {
-                let path = e.path().to_string_lossy().to_string();
-
-                if realtime_print {
-                    println!("{}", path);
-                }
-
-                Some(path)
-            })
-        })
-        .collect()
 }
 
 fn read_stdin() -> Vec<String> {
@@ -131,195 +48,248 @@ fn read_stdin() -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-const HELP_MESSAGE: &'static str = "
-Usage: jw [options] [directories]\n
-Options:
-    -h,  --help           The message you're viewing right now.
-    -R,  --realtime       Print each path as soon as possible in realtime, rather than waiting to collect them all.
-    -r,  --rayon          Enable the use of parallel processing, at the cost of performance.
-    -s,  --stats          Show statistics about the traversal at the end.
-    -sh  --skip-hidden    Don't include .hidden files (included by default).
-    -of, --only-files     Only show files in the output.
-    -od, --only-dirs      Only show directories in the output.
-    -oo, --only-other     Only show entries that aren't files or directories.
-    -   --                Read directories from stdin.";
+const EXCLUDE_FILES: usize = 1;
+const EXCLUDE_DIRS: usize = 2;
+const EXCLUDE_HIDDEN: usize = 4;
+const EXCLUDE_OTHER: usize = 8;
 
-#[derive(Clone, Copy)]
-enum Filter {
-    FilesOnly,
-    DirsOnly,
-    OtherOnly,
-    Everything,
+#[derive(Clone, Debug)]
+struct Options {
+    live_print: bool,
+    checksum: Option<HashAlgorithm>,
+    checksum_threads: usize,
+    depth: usize,
+    exclude: usize,
+    directories: Vec<String>,
+}
+
+fn traverse(options: Options) {
+    let exclude = options.exclude;
+
+    for dir in options.directories {
+        let max_depth = if options.depth == 0 {
+            usize::MAX
+        } else {
+            options.depth
+        };
+
+        let walker = WalkDir::new(dir)
+            .skip_hidden((options.exclude & EXCLUDE_HIDDEN) != 0)
+            .max_depth(max_depth)
+            .into_iter()
+            .filter_map(|entry| {
+                entry.ok().and_then(|e| {
+                    let path = e.path();
+                    (!((exclude & EXCLUDE_DIRS != 0 && path.is_dir())
+                        || (exclude & EXCLUDE_FILES != 0 && path.is_file())
+                        || (exclude & EXCLUDE_OTHER != 0 && (!path.is_dir() && !path.is_file()))))
+                    .then_some(e)
+                })
+            });
+
+        if options.live_print {
+            for entry in walker {
+                println!("{}", entry.path().display());
+            }
+        } else {
+            let results = walker.collect::<Vec<_>>();
+
+            for entry in results {
+                println!("{}", entry.path().display());
+            }
+        }
+    }
+}
+
+fn checksum(options: &Options, algorithm: &HashAlgorithm) {
+    let mut hasher_threads: Vec<JoinHandle<()>> = vec![];
+    let (send_paths_tx, receive_paths_rx) = unbounded::<String>();
+    let (send_hashes_tx, receive_hashes_rx) = unbounded::<String>();
+    let thread_count = options.checksum_threads;
+
+    let done_walking = Arc::new(AtomicBool::new(false));
+
+    for _ in 0..thread_count {
+        let send_hashes_tx = send_hashes_tx.clone();
+        let receive_paths_rx = receive_paths_rx.clone();
+        let done_walking = Arc::clone(&done_walking);
+        let algorithm = algorithm.clone();
+
+        let handle = spawn(move || {
+            while !done_walking.load(Ordering::SeqCst) || !receive_paths_rx.is_empty() {
+                let path = match receive_paths_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+
+                let hash = hash_file!(algorithm, &path);
+
+                if let Ok(hash) = hash {
+                    let formatted = format!("{}:{}", hash, path);
+                    if let Err(e) = send_hashes_tx.send(formatted) {
+                        eprintln!(
+                            "Failed to send hash through channel, breaking thread loop: {}",
+                            e
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+
+        hasher_threads.push(handle);
+    }
+
+    let mut printer_thread: Option<JoinHandle<()>> = None;
+
+    if options.live_print {
+        let done_walking = Arc::clone(&done_walking);
+
+        let receive_hashes_rx = receive_hashes_rx.clone();
+
+        printer_thread = Some(spawn(move || {
+            while !done_walking.load(Ordering::SeqCst) || !receive_paths_rx.is_empty() {
+                match receive_hashes_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(h) => println!("{}", h),
+                    Err(_) => continue,
+                };
+            }
+        }));
+    }
+
+    for dir in &options.directories {
+        let max_depth = if options.depth == 0 {
+            usize::MAX
+        } else {
+            options.depth
+        };
+
+        let walker = WalkDir::new(dir)
+            .skip_hidden((options.exclude & EXCLUDE_HIDDEN) != 0)
+            .max_depth(max_depth)
+            .into_iter()
+            .filter_map(|entry| entry.ok().and_then(|e| e.path().is_file().then_some(e)));
+
+        for entry in walker {
+            if let Err(e) = send_paths_tx.send(entry.path().to_string_lossy().to_string()) {
+                eprintln!("Failed to send path through channel: {}", e);
+            }
+        }
+    }
+
+    done_walking.store(true, Ordering::SeqCst);
+
+    for handle in hasher_threads {
+        handle.join().unwrap();
+    }
+
+    if let Some(handle) = printer_thread {
+        handle.join().unwrap();
+    }
+
+    if !options.live_print {
+        while !receive_hashes_rx.is_empty() {
+            if let Ok(hash) = receive_hashes_rx.recv_timeout(Duration::from_millis(100)) {
+                println!("{}", hash);
+            }         
+        }
+    }
 }
 
 fn main() {
-    let arguments = std::env::args().skip(1);
-    let mut realtime_output: bool = false;
+    let matches = Command::new("jw")
+        .version("2.0")
+        .about("A CLI frontend to jwalk for blazingly fast filesystem traversal!")
+        .arg(Arg::new("live-print")
+            .long("live")
+            .short('l')
+            .action(ArgAction::SetTrue)
+            .help("Display results in realtime, rather than collecting first and displaying later.")
+            .long_help("Display results in realtime, rather than collecting first and displaying later.
+This will result in a significant drop in performance due to the constant terminal output."))
 
-    let mut directories = Vec::<String>::new();
-    let mut stdin_mode: bool = false;
+        .arg(Arg::new("checksum")
+            .long("checksum")
+            .short('c')
+            .num_args(0..=1)
+            .value_parser(["xxh3", "sha224", "sha256", "sha384", "sha512", "md5"])
+            .value_name("algorithm")
+            .help("Output an index containing the hash of every file using the specified algorithm.")
+            .long_help(
+"Output an index containing the hash of every file using the specified algorithm.
+It is highly recommended you stick with xxh3, as it is significantly more performant,
+and directly suited for this use case. SHA2/MD5 are only provided for compatibility."))
 
-    let mut options_over: bool = false;
-    let mut enable_rayon: bool = false;
-    let mut enable_stats: bool = false;
+        .arg(Arg::new("checksum-threads")
+            .long("threads")
+            .short('t')
+            .value_parser(value_parser!(usize))
+            .value_name("count")
+            .default_value("4")
+            .help("The number of threads to use to hash files in parallel."))
 
-    let mut file_filter = false;
-    let mut directory_filter = false;
-    let mut other_filter = false;
+        .arg(Arg::new("depth")
+            .long("depth")
+            .short('d')
+            .value_parser(value_parser!(usize))
+            .value_name("limit")
+            .default_value("0")
+            .help("The recursion depth limit. Setting this to 1 effectively disables recursion."))
 
-    let mut skip_hidden: bool = false;
+        .arg(Arg::new("exclude")
+            .long("exclude")
+            .short('x')
+            .value_parser(["files", "dirs", "dot", "other"])
+            .value_name("t1,t2")
+            .value_delimiter(',')
+            .help("Exclude one more types of entries, separated by coma.")
+            .num_args(0..=4))
 
-    for arg in arguments {
-        match arg.as_str() {
-            "--help" | "-h" if !options_over => {
-                println!("{}", HELP_MESSAGE);
-                std::process::exit(0);
-            }
+        .arg(Arg::new("directories")
+            .default_value(".")
+            .num_args(1..)
+            .help("The target directories to traverse, can be multiple. Use -- to read directories from stdin."))
 
-            "--verbose" | "-v" if !options_over => realtime_output = true,
-            "--rayon" | "-r" if !options_over => enable_rayon = true,
-            "--stats" | "-s" if !options_over => enable_stats = true,
+        .get_matches();
 
-            "--only-files" | "-of" => file_filter = true,
-            "--only-dirs" | "-od" => directory_filter = true,
-            "--only-other" | "-oo" => other_filter = true,
-            "--skip-hidden" | "-sh" => skip_hidden = false,
-
-            directory => {
-                if !options_over {
-                    options_over = true;
-                }
-
-                if matches!(directory, "--" | "-") {
-                    stdin_mode = true;
-                    break;
-                } else {
-                    directories.push(directory.to_string());
-                }
-            }
-        }
-    }
-
-    let filter = match (file_filter, directory_filter, other_filter) {
-        (false, false, false) => Filter::Everything,
-        (true, false, false) => Filter::FilesOnly,
-        (false, true, false) => Filter::DirsOnly,
-        (false, false, true) => Filter::OtherOnly,
-        (_, _, _) => {
-            eprintln!("Cannot use both --only-files and --only-dirs at the same time. Provide neither to allow both.");
-            std::process::exit(1);
-        }
+    let mut supplied_targets: Vec<String> = match matches.get_many::<String>("directories") {
+        Some(dirs) => dirs.into_iter().map(|s| s.to_string()).collect(),
+        None => panic!("No directories supplied!"),
     };
 
-    if stdin_mode {
-        directories = read_stdin();
+    if supplied_targets.first().is_some_and(|s| s == "--") {
+        supplied_targets = read_stdin();
     }
 
-    if directories.is_empty() {
-        eprintln!("Please provide one or more directories.");
-        std::process::exit(1);
-    } else if vec!["-h".to_string(), "--help".to_string()].contains(&directories[0]) {
-        eprintln!("Please provide one or more directories.");
-        eprintln!("Example: jls dir1 dir2 dir3");
-        std::process::exit(1);
-    }
+    let exclude_flags = matches.get_many::<String>("exclude").map_or(0, |flags| {
+        flags
+            .into_iter()
+            .fold(0, |acc, flag| match flag.to_lowercase().as_str() {
+                "files" => acc | EXCLUDE_FILES,
+                "dirs" => acc | EXCLUDE_DIRS,
+                "dot" => acc | EXCLUDE_HIDDEN,
+                "other" => acc | EXCLUDE_OTHER,
+                _ => acc,
+            })
+    });
 
-    let file_counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
-    let dir_counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
-    let other_counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
+    let options = Options {
+        live_print: *matches.get_one::<bool>("live-print").unwrap_or(&false),
+        exclude: exclude_flags,
+        checksum: matches.contains_id("checksum").then(|| {
+            matches
+                .get_one::<String>("checksum")
+                .map(|s| HashAlgorithm::from_str(s))
+                .unwrap_or(HashAlgorithm::Xxh3)
+        }),
+        checksum_threads: *matches.get_one("checksum-threads").unwrap_or(&4),
+        depth: *matches.get_one("depth").unwrap_or(&0),
+        directories: supplied_targets,
+    };
 
-    macro_rules! traversem {
-        ($iterator:expr, $verbose:expr, $stats:expr, $skip_hidden:expr, $filter:expr) => {
-            $iterator
-                .map(|d| {
-                    traverse(
-                        d,
-                        $verbose,
-                        $stats,
-                        $skip_hidden,
-                        $filter,
-                        file_counter.clone(),
-                        dir_counter.clone(),
-                        other_counter.clone(),
-                    )
-                })
-                .collect::<Vec<_>>()
-                .iter()
-                .flat_map(|inner| inner.iter())
-                .cloned()
-                .collect()
-        };
-    }
-
-    let start_time = Instant::now();
-
-    let results: Vec<String> = if enable_rayon {
-        traversem!(
-            directories.par_iter(),
-            realtime_output,
-            enable_stats,
-            skip_hidden,
-            filter
-        )
+    if let Some(algorithm) = &options.checksum {
+        checksum(&options, &algorithm);
     } else {
-        traversem!(
-            directories.iter(),
-            realtime_output,
-            enable_stats,
-            skip_hidden,
-            filter
-        )
-    };
-
-    let elapsed_time = start_time.elapsed();
-
-    if !realtime_output {
-        for result in &results {
-            println!("{}", result);
-        }
-    }
-
-    if enable_stats {
-        let file_counter = file_counter.lock();
-        let dir_counter = dir_counter.lock();
-        let other_counter = other_counter.lock();
-
-        match (file_counter, dir_counter, other_counter) {
-            (Ok(fc), Ok(dc), Ok(oc)) => {
-                let file_count = prettify_int(*fc);
-                let dir_count = prettify_int(*dc);
-                let other_count = prettify_int(*oc);
-
-                let total_count = prettify_int(results.len() as u64);
-
-                let count_message = match filter {
-                    Filter::Everything => {
-                        format!(
-                            "{} paths total, {} files, {} directories, and {} other",
-                            total_count, file_count, dir_count, other_count
-                        )
-                    }
-                    Filter::FilesOnly => format!("{} files", total_count),
-                    Filter::DirsOnly => {
-                        format!("{} directories", total_count)
-                    }
-                    Filter::OtherOnly => {
-                        format!("{} misc", total_count)
-                    }
-                };
-
-                println!(
-                    "\nFinished traversing {} root directories, collecting {} in {} seconds.",
-                    directories.len(),
-                    count_message,
-                    elapsed_time.as_secs_f64()
-                );
-            }
-
-            (_, _, _) => {
-                eprintln!("Failed to acquire mutex lock for counting files and directories.");
-                std::process::exit(1);
-            }
-        }
+        traverse(options);
     }
 }
