@@ -225,7 +225,7 @@ fn checksum(options: &Options, algorithm: &HashAlgorithm) {
     }
 }
 
-fn checksum_diff(paths: &Vec<String>) {
+fn checksum_diff(paths: &Vec<String>, print_stats: bool) {
     let mut paths = paths.into_iter();
 
     let convert = |path: &String| -> Option<PathBuf> {
@@ -297,7 +297,7 @@ fn checksum_diff(paths: &Vec<String>) {
                     discrepancies += 1;
                 }
             } else {
-                msg_excess.push(format!("[+({})] {}", hash_file.display(), file_name));
+                msg_missing.push(format!("[-({})] {}", hash_file.display(), file_name));
                 discrepancies += 1;
             }
         }
@@ -306,8 +306,8 @@ fn checksum_diff(paths: &Vec<String>) {
     for (other_hashes, hash_file) in &subsequent_hash_files {
         for (file_name, other_hash) in other_hashes {
             if !base_hashes.contains_key(file_name) {
-                msg_missing.push(format!(
-                    "[-({})] {}:{}",
+                msg_excess.push(format!(
+                    "[+({})] {}:{}",
                     hash_file.display(),
                     other_hash,
                     file_name
@@ -318,28 +318,28 @@ fn checksum_diff(paths: &Vec<String>) {
         }
     }
 
-    for msg in &msg_mismatches {
+    for msg in msg_mismatches
+        .iter()
+        .chain(msg_missing.iter())
+        .chain(msg_excess.iter())
+    {
         println!("{}", msg);
     }
 
-    for msg in &msg_missing {
-        println!("{}", msg);
-    }
-
-    for msg in &msg_excess {
-        println!("{}", msg);
-    }
-
-    if discrepancies == 0 {
-        println!("All entries validated without any discrepancies.")
-    } else {
-        println!("\nFound {} total discrepancies!", discrepancies);
-        println!(
-            "  {} Mismatching Hashes\n  {} Missing Files\n  {} Excess Files",
-            msg_mismatches.len(),
-            msg_missing.len(),
-            msg_excess.len()
-        );
+    if print_stats {
+        if discrepancies == 0 {
+            println!("All entries validated without any discrepancies.");
+            exit(0);
+        } else {
+            println!("\nFound {} total discrepancies!", discrepancies);
+            println!(
+                "  {} Mismatching Hashes\n  {} Missing Files\n  {} Excess Files",
+                msg_mismatches.len(),
+                msg_missing.len(),
+                msg_excess.len()
+            );
+            exit(1);
+        }
     }
 }
 
@@ -360,6 +360,7 @@ This will result in a significant drop in performance due to the constant termin
             .short('c')
             .num_args(0..=1)
             .value_parser(["xxh3", "sha224", "sha256", "sha384", "sha512", "md5"])
+            .ignore_case(true)
             .value_name("algorithm")
             .help("Output an index containing the hash of every file using the specified algorithm.")
             .long_help(
@@ -372,12 +373,12 @@ and directly suited for this use case. SHA2/MD5 are only provided for compatibil
             .short('t')
             .value_parser(value_parser!(usize))
             .value_name("count")
-            .default_value("4")
+            .default_value("1")
             .help("The number of threads to use to hash files in parallel."))
 
         .arg(Arg::new("hdiff")
-            .long("hdiff")
-            .short('D')
+            .long("diff")
+            .short('C')
             .value_names(["file1", "file2"])
             .num_args(2..)
             .help("Validate hashes from two or more files containing output from `jw --checksum`")
@@ -426,7 +427,7 @@ files you're traversing, the more it begins to add up.")
             .map(|s| s.to_string())
             .collect::<Vec<String>>()
     }) {
-        checksum_diff(&checksum_files);
+        checksum_diff(&checksum_files, *matches.get_one("stats").unwrap_or(&false));
         exit(0);
     }
 
@@ -460,7 +461,7 @@ files you're traversing, the more it begins to add up.")
                 .map(HashAlgorithm::from)
                 .unwrap_or(HashAlgorithm::Xxh3)
         }),
-        checksum_threads: *matches.get_one("checksum-threads").unwrap_or(&4),
+        checksum_threads: *matches.get_one("checksum-threads").unwrap_or(&1),
         depth: *matches.get_one("depth").unwrap_or(&0),
         directories: walk_dirs,
         print_stats: *matches.get_one("stats").unwrap_or(&false),
