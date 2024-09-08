@@ -225,8 +225,8 @@ fn checksum(options: &Options, algorithm: &HashAlgorithm) {
     }
 }
 
-fn checksum_diff(paths: &Vec<String>, print_stats: bool) {
-    let mut paths = paths.into_iter();
+fn checksum_diff(paths: &[String], print_stats: bool) {
+    let mut paths = paths.iter();
 
     let convert = |path: &String| -> Option<PathBuf> {
         Some(PathBuf::from(path))
@@ -264,7 +264,7 @@ fn checksum_diff(paths: &Vec<String>, print_stats: bool) {
             exit(1);
         }))
         .lines()
-        .filter_map(Result::ok)
+        .map_while(Result::ok)
         .filter_map(parse_line)
         .collect()
     };
