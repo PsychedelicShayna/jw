@@ -26,11 +26,13 @@ The SHA2 family and MD5 is also supported but that's only there for compatibilit
 ## Usage
 
 ```
+A CLI frontend to jwalk for blazingly fast filesystem traversal!
+
 Usage: jw [OPTIONS] [directories]...
 
 Arguments:
   [directories]...
-          The target directories to traverse, can be multiple. Use -- to read directories from stdin.
+          The target directories to traverse, can be multiple. Use -- to read paths from stdin.
 
           [default: .]
 
@@ -49,7 +51,14 @@ Options:
   -t, --threads <count>
           The number of threads to use to hash files in parallel.
 
-          [default: 4]
+          [default: 1]
+
+  -C, --diff <file1> <file2>...
+          Validate hashes from two or more files containing output from `jw --checksum`
+          The first file will be treated as the "correct" one; any discrepant hashes
+          in the subseqeunt files will be reported. If entries from the first file are
+          missing in the subsequent files, or if the subsequent files have entries not
+          present in the first file, that will be reported as well.
 
   -d, --depth <limit>
           The recursion depth limit. Setting this to 1 effectively disables recursion.
@@ -61,9 +70,14 @@ Options:
 
           [possible values: files, dirs, dot, other]
 
+  -s, --stats
+          Count the number of files, dirs, and other entries, and print at the end.
+          This will decrease performance. Unnoticeable in most cases, but the more
+          files you're traversing, the more it begins to add up.
+
   -h, --help
           Print help (see a summary with '-h')
 
   -V, --version
-
+          Print version
 ```
