@@ -1,6 +1,11 @@
 use clap::{self, value_parser, Arg, ArgAction, Command};
 use crossbeam_channel::unbounded;
 use jwalk::WalkDir;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{spawn, JoinHandle};
@@ -35,6 +40,7 @@ struct Options {
     depth: usize,
     exclude: usize,
     directories: Vec<String>,
+    print_stats: bool,
 }
 
 fn traverse(options: Options) {
@@ -61,16 +67,65 @@ fn traverse(options: Options) {
                 })
             });
 
+        let mut file_count: usize = 0;
+        let mut dir_count: usize = 0;
+        let mut other_count: usize = 0;
+
+        // The choice to repeat myself by nesting the same for loop under
+        // several branches, rather than putting those branches into the
+        // for loop is a deliberate one. Applying DRY to everything will
+        // result in shittier code in some scenarios. Apply DRY where it
+        // makes sense. In this case, it would reduce performance of each
+        // iteration at a rate of O(N). For what? A handful of fewer lines?
         if options.live_print {
-            for entry in walker {
-                println!("{}", entry.path().display());
+            if options.print_stats {
+                for entry in walker {
+                    let path = entry.path();
+
+                    if path.is_file() {
+                        file_count += 1;
+                    } else if path.is_dir() {
+                        dir_count += 1;
+                    } else {
+                        other_count += 1;
+                    }
+
+                    println!("{}", path.display());
+                }
+            } else {
+                for entry in walker {
+                    println!("{}", entry.path().display());
+                }
             }
         } else {
             let results = walker.collect::<Vec<_>>();
 
-            for entry in results {
-                println!("{}", entry.path().display());
+            if options.print_stats {
+                for entry in results {
+                    let path = entry.path();
+
+                    if path.is_file() {
+                        file_count += 1;
+                    } else if path.is_dir() {
+                        dir_count += 1;
+                    } else {
+                        other_count += 1;
+                    }
+
+                    println!("{}", entry.path().display());
+                }
+            } else {
+                for entry in results {
+                    println!("{}", entry.path().display());
+                }
             }
+        }
+
+        if options.print_stats {
+            println!(
+                "\nCounted {} files, {} directories, and {} misc entries.",
+                file_count, dir_count, other_count,
+            );
         }
     }
 }
@@ -170,6 +225,124 @@ fn checksum(options: &Options, algorithm: &HashAlgorithm) {
     }
 }
 
+fn checksum_diff(paths: &Vec<String>) {
+    let mut paths = paths.into_iter();
+
+    let convert = |path: &String| -> Option<PathBuf> {
+        Some(PathBuf::from(path))
+            .filter(|p| p.is_file())
+            .or_else(|| {
+                eprintln!("Doesn't exist/not a file: {:?}", path);
+                exit(1);
+            })
+    };
+
+    let base_file: PathBuf = paths.next().and_then(convert).unwrap_or_else(|| {
+        eprintln!("Not enough files to perform a diff. Missing the first.");
+        exit(1);
+    });
+
+    let subsequent_files: Vec<PathBuf> = paths
+        .next()
+        .or_else(|| {
+            eprintln!("Not enough files to perform a diff. Missing the second.");
+            exit(1);
+        })
+        .into_iter()
+        .chain(paths)
+        .filter_map(convert)
+        .collect();
+
+    let read_hashes = |file: &PathBuf| -> HashMap<String, String> {
+        let parse_line = |line: String| -> Option<(String, String)> {
+            let mut parts = line.split(':').rev().map(&str::to_string);
+            Some((parts.next()?, parts.next()?))
+        };
+
+        BufReader::new(File::open(file).unwrap_or_else(|e| {
+            eprintln!("Failed to open file: {}", e);
+            exit(1);
+        }))
+        .lines()
+        .filter_map(Result::ok)
+        .filter_map(parse_line)
+        .collect()
+    };
+
+    let base_hashes: HashMap<String, String> = read_hashes(&base_file);
+
+    let subsequent_hash_files: Vec<(HashMap<String, String>, PathBuf)> = subsequent_files
+        .into_iter()
+        .map(|pb| (read_hashes(&pb), pb))
+        .collect();
+
+    let mut discrepancies: usize = 0;
+
+    let mut msg_mismatches: Vec<String> = vec![];
+    let mut msg_missing: Vec<String> = vec![];
+    let mut msg_excess: Vec<String> = vec![];
+
+    for (file_name, base_hash) in &base_hashes {
+        for (other_hashes, hash_file) in &subsequent_hash_files {
+            if let Some(other_hash) = other_hashes.get(file_name) {
+                if *other_hash != *base_hash {
+                    msg_mismatches.push(format!(
+                        "[!({})] {} != {} == {}",
+                        hash_file.display(),
+                        other_hash,
+                        base_hash,
+                        file_name,
+                    ));
+
+                    discrepancies += 1;
+                }
+            } else {
+                msg_excess.push(format!("[+({})] {}", hash_file.display(), file_name));
+                discrepancies += 1;
+            }
+        }
+    }
+
+    for (other_hashes, hash_file) in &subsequent_hash_files {
+        for (file_name, other_hash) in other_hashes {
+            if !base_hashes.contains_key(file_name) {
+                msg_missing.push(format!(
+                    "[-({})] {}:{}",
+                    hash_file.display(),
+                    other_hash,
+                    file_name
+                ));
+
+                discrepancies += 1;
+            }
+        }
+    }
+
+    for msg in &msg_mismatches {
+        println!("{}", msg);
+    }
+
+    for msg in &msg_missing {
+        println!("{}", msg);
+    }
+
+    for msg in &msg_excess {
+        println!("{}", msg);
+    }
+
+    if discrepancies == 0 {
+        println!("All entries validated without any discrepancies.")
+    } else {
+        println!("\nFound {} total discrepancies!", discrepancies);
+        println!(
+            "  {} Mismatching Hashes\n  {} Missing Files\n  {} Excess Files",
+            msg_mismatches.len(),
+            msg_missing.len(),
+            msg_excess.len()
+        );
+    }
+}
+
 fn main() {
     let matches = Command::new("jw")
         .version("2.0")
@@ -202,6 +375,18 @@ and directly suited for this use case. SHA2/MD5 are only provided for compatibil
             .default_value("4")
             .help("The number of threads to use to hash files in parallel."))
 
+        .arg(Arg::new("hdiff")
+            .long("hdiff")
+            .short('D')
+            .value_names(["file1", "file2"])
+            .num_args(2..)
+            .help("Validate hashes from two or more files containing output from `jw --checksum`")
+            .long_help("Validate hashes from two or more files containing output from `jw --checksum`
+The first file will be treated as the \"correct\" one; any discrepant hashes
+in the subseqeunt files will be reported. If entries from the first file are
+missing in the subsequent files, or if the subsequent files have entries not 
+present in the first file, that will be reported as well."))
+
         .arg(Arg::new("depth")
             .long("depth")
             .short('d')
@@ -209,6 +394,7 @@ and directly suited for this use case. SHA2/MD5 are only provided for compatibil
             .value_name("limit")
             .default_value("0")
             .help("The recursion depth limit. Setting this to 1 effectively disables recursion."))
+
 
         .arg(Arg::new("exclude")
             .long("exclude")
@@ -219,20 +405,38 @@ and directly suited for this use case. SHA2/MD5 are only provided for compatibil
             .help("Exclude one more types of entries, separated by coma.")
             .num_args(0..=4))
 
+        .arg(Arg::new("stats")
+            .long("stats")
+            .short('s')
+            .action(ArgAction::SetTrue)
+            .help("Count the number of files, dirs, and other entries, and print at the end.")
+            .long_help("Count the number of files, dirs, and other entries, and print at the end.
+This will decrease performance. Unnoticeable in most cases, but the more 
+files you're traversing, the more it begins to add up.")
+            )
+
         .arg(Arg::new("directories")
             .default_value(".")
             .num_args(1..)
-            .help("The target directories to traverse, can be multiple. Use -- to read directories from stdin."))
-
+            .help("The target directories to traverse, can be multiple. Use -- to read paths from stdin."))
         .get_matches();
 
-    let mut supplied_targets: Vec<String> = match matches.get_many::<String>("directories") {
-        Some(dirs) => dirs.into_iter().map(|s| s.to_string()).collect(),
-        None => panic!("No directories supplied!"),
-    };
+    if let Some(checksum_files) = matches.get_many::<String>("hdiff").map(|fp| {
+        fp.into_iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
+    }) {
+        checksum_diff(&checksum_files);
+        exit(0);
+    }
 
-    if supplied_targets.first().is_some_and(|s| s == "--") {
-        supplied_targets = read_stdin();
+    let mut walk_dirs: Vec<String> = matches
+        .get_many::<String>("directories")
+        .map(|dirs| dirs.into_iter().map(|s| s.to_string()).collect())
+        .expect("No directories provided!");
+
+    if walk_dirs.first().is_some_and(|s| s == "--") {
+        walk_dirs = read_stdin();
     }
 
     let exclude_flags = matches.get_many::<String>("exclude").map_or(0, |flags| {
@@ -258,7 +462,8 @@ and directly suited for this use case. SHA2/MD5 are only provided for compatibil
         }),
         checksum_threads: *matches.get_one("checksum-threads").unwrap_or(&4),
         depth: *matches.get_one("depth").unwrap_or(&0),
-        directories: supplied_targets,
+        directories: walk_dirs,
+        print_stats: *matches.get_one("stats").unwrap_or(&false),
     };
 
     if let Some(algorithm) = &options.checksum {
