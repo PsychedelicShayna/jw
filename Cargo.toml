@@ -1,6 +1,6 @@
 [package]
 name = "jw"
-version = "2.2.1"
+version = "2.2.2"
 edition = "2021"
 
 description = "Blazingly fast filesystem traverser and mass file hasher with diff support, powered by jwalk and xxh3!"
@@ -13,8 +13,8 @@ exclude = [
   "target"
 ]
 
-repository = "https://gitub.com/PsychedelicShayna/jw"
-homepage = "https://gitub.com/PsychedelicShayna/jw"
+repository = "https://github.com/PsychedelicShayna/jw"
+homepage = "https://github.com/PsychedelicShayna/jw"
 
 categories = ["command-line-utilities", "filesystem"]
 keywords = ["jwalk", "diff", "file", "search", "hash" ]
