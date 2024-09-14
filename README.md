@@ -23,6 +23,8 @@ As for Xxh3 combined with JWalk, it was capable of hashing 7.2GB across more tha
 
 The SHA2 family and MD5 is also supported but that's only there for compatibility.
 
+https://github.com/user-attachments/assets/aefa8f0f-aabd-4b5e-94ee-b2b3402a54b8
+
 ## Usage
 
 ```
