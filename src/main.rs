@@ -1,3 +1,4 @@
+use clap::parser::ValueSource;
 use clap::{self, value_parser, Arg, ArgAction, Command};
 use crossbeam_channel::unbounded;
 use jwalk::WalkDir;
@@ -462,17 +463,24 @@ files you're traversing, the more it begins to add up.")
             })
     });
 
+
+    let checksum_mode = matches!(
+        matches.value_source("checksum"),
+        Some(ValueSource::CommandLine)
+    ) || matches!(
+        matches.value_source("checksum-algo"),
+        Some(ValueSource::CommandLine)
+    );
+
     let options = Options {
         live_print: *matches.get_one::<bool>("live-print").unwrap_or(&false),
         exclude: exclude_flags,
-        checksum: (matches.contains_id("checksum") || matches.contains_id("checksum-algo")).then(
-            || {
-                matches
-                    .get_one::<String>("checksum-algo")
-                    .map(HashAlgorithm::from)
-                    .unwrap_or(HashAlgorithm::Xxh3)
-            },
-        ),
+        checksum: checksum_mode.then(|| {
+            matches
+                .get_one::<String>("checksum-algo")
+                .map(HashAlgorithm::from)
+                .unwrap_or(HashAlgorithm::Xxh3)
+        }),
         checksum_threads: *matches.get_one("checksum-threads").unwrap_or(&1),
         depth: *matches.get_one("depth").unwrap_or(&0),
         directories: walk_dirs,
