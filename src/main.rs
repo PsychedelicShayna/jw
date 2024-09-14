@@ -1,16 +1,14 @@
 use clap::parser::ValueSource;
 use clap::{self, value_parser, Arg, ArgAction, Command};
-use crossbeam_channel::unbounded;
 use jwalk::WalkDir;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use rayon::iter::*;
 use std::path::PathBuf;
 use std::process::exit;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::{spawn, JoinHandle};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufRead, BufReader},
+};
 
 #[macro_use]
 pub mod hashutil;
@@ -37,7 +35,6 @@ const EXCLUDE_OTHER: usize = 8;
 struct Options {
     live_print: bool,
     checksum: Option<HashAlgorithm>,
-    checksum_threads: usize,
     depth: usize,
     exclude: usize,
     silent: bool,
@@ -146,62 +143,7 @@ fn traverse(options: Options) {
     }
 }
 
-fn checksum(options: &Options, algorithm: &HashAlgorithm) {
-    let mut hasher_threads: Vec<JoinHandle<()>> = vec![];
-    let (send_paths_tx, receive_paths_rx) = unbounded::<String>();
-    let (send_hashes_tx, receive_hashes_rx) = unbounded::<String>();
-    let thread_count = options.checksum_threads;
-
-    let done_walking = Arc::new(AtomicBool::new(false));
-
-    for _ in 0..thread_count {
-        let send_hashes_tx = send_hashes_tx.clone();
-        let receive_paths_rx = receive_paths_rx.clone();
-        let done_walking = Arc::clone(&done_walking);
-        let algorithm = algorithm.clone();
-
-        let handle = spawn(move || {
-            while !done_walking.load(Ordering::SeqCst) || !receive_paths_rx.is_empty() {
-                let path = match receive_paths_rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-
-                let hash = hash_file!(algorithm, &path);
-
-                if let Ok(hash) = hash {
-                    let formatted = format!("{}:{}", hash, path);
-                    if let Err(e) = send_hashes_tx.send(formatted) {
-                        eprintln!(
-                            "Failed to send hash through channel, breaking thread loop: {}",
-                            e
-                        );
-                        break;
-                    }
-                }
-            }
-        });
-
-        hasher_threads.push(handle);
-    }
-
-    let mut printer_thread: Option<JoinHandle<()>> = None;
-
-    if options.live_print {
-        let done_walking = Arc::clone(&done_walking);
-
-        let receive_hashes_rx = receive_hashes_rx.clone();
-
-        printer_thread = Some(spawn(move || {
-            while !done_walking.load(Ordering::SeqCst) || !receive_paths_rx.is_empty() {
-                match receive_hashes_rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(h) => println!("{}", h),
-                    Err(_) => continue,
-                };
-            }
-        }));
-    }
-
+fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
     for dir in &options.directories {
         let max_depth = if options.depth == 0 {
             usize::MAX
@@ -213,29 +155,41 @@ fn checksum(options: &Options, algorithm: &HashAlgorithm) {
             .skip_hidden((options.exclude & EXCLUDE_HIDDEN) != 0)
             .max_depth(max_depth)
             .into_iter()
-            .filter_map(|entry| entry.ok().and_then(|e| e.path().is_file().then_some(e)));
+            .par_bridge()
+            .filter_map(|e| {
+                e.ok().and_then(|e| {
+                    e.path()
+                        .is_file()
+                        .then_some(e.path().to_str())
+                        .flatten()
+                        .map(str::to_string)
+                })
+            });
 
-        for entry in walker {
-            if let Err(e) = send_paths_tx.send(entry.path().to_string_lossy().to_string()) {
-                eprintln!("Failed to send path through channel: {}", e);
-            }
-        }
-    }
+        let hashes: Vec<(String, String)> = if options.live_print {
+            walker
+                .filter_map(|file_path| {
+                    hash_file!(algorithm, &file_path)
+                        .map(|hash| {
+                            println!("{}:{}", file_path, hash);
+                            (file_path, hash)
+                        })
+                        .ok()
+                })
+                .collect()
+        } else {
+            walker
+                .filter_map(|file_path| {
+                    hash_file!(algorithm, &file_path)
+                        .map(|hash| (file_path, hash))
+                        .ok()
+                })
+                .collect()
+        };
 
-    done_walking.store(true, Ordering::SeqCst);
-
-    for handle in hasher_threads {
-        handle.join().unwrap();
-    }
-
-    if let Some(handle) = printer_thread {
-        handle.join().unwrap();
-    }
-
-    if !options.live_print && !options.silent {
-        while !receive_hashes_rx.is_empty() {
-            if let Ok(hash) = receive_hashes_rx.recv_timeout(Duration::from_millis(100)) {
-                println!("{}", hash);
+        if !options.silent && !options.live_print {
+            for (file_path, hash) in hashes {
+                println!("{}:{}", hash, file_path);
             }
         }
     }
@@ -361,7 +315,7 @@ fn checksum_diff(paths: &[String], print_stats: bool) {
 
 fn main() {
     let matches = Command::new("jw")
-        .version("2.2.5")
+        .version("2.2.6")
         .about("A CLI frontend to jwalk for blazingly fast filesystem traversal!")
         .arg(Arg::new("live-print")
             .long("live")
@@ -393,14 +347,6 @@ Using xxh3 is the recommended choice. Unless you have a reason to use something 
 stick with the default. SHA2 and MD5 are provided for compatibility with other tools 
 and existing data. If you're only using jw, you stand to gain a large increase in 
 performance by using xxh3."))
-
-        .arg(Arg::new("checksum-threads")
-            .long("threads")
-            .short('t')
-            .value_parser(value_parser!(usize))
-            .value_name("count")
-            .default_value("1")
-            .help("The number of threads to use to hash files in parallel."))
 
         .arg(Arg::new("hdiff")
             .long("diff")
@@ -502,14 +448,13 @@ files you're traversing, the more it begins to add up.")
                 .unwrap_or(HashAlgorithm::Xxh3)
         }),
         silent: *matches.get_one::<bool>("silent").unwrap_or(&false),
-        checksum_threads: *matches.get_one("checksum-threads").unwrap_or(&1),
         depth: *matches.get_one("depth").unwrap_or(&0),
         directories: walk_dirs,
         print_stats: *matches.get_one("stats").unwrap_or(&false),
     };
 
     if let Some(algorithm) = &options.checksum {
-        checksum(&options, algorithm);
+        checksum_rayon(&options, algorithm);
     } else {
         traverse(options);
     }

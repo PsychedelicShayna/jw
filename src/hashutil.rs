@@ -1,6 +1,6 @@
 use std::fmt::Write;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 
 pub use md5::{Context as Md5Context, Digest as Md5Digest};
 
@@ -8,6 +8,8 @@ use sha2::Digest as ShaDigest;
 pub use sha2::{Sha224, Sha256, Sha384, Sha512};
 
 pub use xxhash_rust::xxh3::Xxh3Default; // <3
+
+use memmap2::Mmap;
 
 
 #[derive(Debug, Clone)]
@@ -48,18 +50,30 @@ macro_rules! hash_file {
 }
 
 pub fn hash_file<H: Hasher>(path: &String) -> std::io::Result<String> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-    let mut buffer = vec![0; 4096];
-
+    let mut file = File::open(path)?;
     let mut hasher = H::create();
 
-    while let Ok(bytes_read) = reader.read(&mut buffer) {
-        if bytes_read == 0 {
-            break;
-        }
+    let _ = file.seek(SeekFrom::End(0));
+    let file_size = file.stream_position().ok().unwrap();
+    let _ = file.seek(SeekFrom::Start(0));
 
-        hasher.update(&buffer[..bytes_read]);
+    if file_size > (1024*1024)*20 {
+        let mmap = unsafe { Mmap::map(&file)? };
+        hasher.update(&mmap);
+    } 
+
+    // Read in 128kb chunks
+    else {
+        let mut reader = BufReader::new(file);
+        let mut buffer = vec![0; 128*1024];
+
+        while let Ok(bytes_read) = reader.read(&mut buffer) {
+            if bytes_read == 0 {
+                break;
+            }
+
+            hasher.update(&buffer[..bytes_read]);
+        }
     }
 
     Ok(hexlify(hasher.finalize()))
