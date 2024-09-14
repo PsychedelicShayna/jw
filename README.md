@@ -15,6 +15,14 @@ Rather than fancy colorized outputs, TUIs, gathering statistics, etc, jw sticks 
 
 It simply gives you the raw output as fast as possible, for you to pipe to other utilities, such as ripgrep/grep, xargs, and the like, with no additional nonsense.
 
+
+https://github.com/user-attachments/assets/9f4a3cf5-4dfa-4a57-845b-a26ded3f660a
+
+
+
+https://github.com/user-attachments/assets/f27bda63-a97f-441f-be86-2514fdc64d37
+
+
 ## Performance
 
 To give you a rough idea of the performance, JWalk was capable of traversing thorugh 492 GB worth of files in **3 seconds**. That's all it takes, three seconds and you can already grep for file paths.
@@ -23,7 +31,19 @@ As for Xxh3 combined with JWalk, it was capable of hashing 7.2GB across more tha
 
 The SHA2 family and MD5 is also supported but that's only there for compatibility.
 
-https://github.com/user-attachments/assets/aefa8f0f-aabd-4b5e-94ee-b2b3402a54b8
+
+https://github.com/user-attachments/assets/2db684a0-a6f6-4416-a2fc-4b65c0da5963
+
+
+
+https://github.com/user-attachments/assets/1ecdfc70-8233-4fdb-b75d-00d3c7ca22a5
+
+
+
+https://github.com/user-attachments/assets/9d959641-2fcd-41bc-b397-2d7098d59174
+
+
+
 
 ## Usage
 
