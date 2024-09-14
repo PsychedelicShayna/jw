@@ -326,7 +326,7 @@ fn main() {
 This will result in a significant drop in performance due to the constant terminal output."))
 
         .arg(Arg::new("checksum")
-            .long("csum")
+            .long("checksum")
             .short('c')
             .action(ArgAction::SetTrue)
             .help("Output an index containing the hash of every file using the specified algorithm.")
@@ -334,15 +334,15 @@ This will result in a significant drop in performance due to the constant termin
 Uses the default algorithm. To specify one use --calgo. Note: specifying --calgo makes this redundant."))
 
         .arg(Arg::new("checksum-algo")
-            .long("calgo")
+            .long("checksum-with")
             .short('C')
             .value_parser(["xxh3", "sha224", "sha256", "sha384", "sha512", "md5"])
             .default_value("xxh3")
             .ignore_case(true)
             .value_name("algorithm")
             .default_value("xxh3")
-            .help("Performs --csum but with the specified hashing algorithm.")
-            .long_help("Performs --csum but with the specified hashing algorithm.
+            .help("Performs --checksum but with the specified hashing algorithm.")
+            .long_help("Performs --checksum but with the specified hashing algorithm.
 Using xxh3 is the recommended choice. Unless you have a reason to use something else, 
 stick with the default. SHA2 and MD5 are provided for compatibility with other tools 
 and existing data. If you're only using jw, you stand to gain a large increase in 

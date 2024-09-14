@@ -26,6 +26,8 @@ The SHA2 family and MD5 is also supported but that's only there for compatibilit
 ## Usage
 
 ```
+A CLI frontend to jwalk for blazingly fast filesystem traversal!
+
 Usage: jw [OPTIONS] [directories]...
 
 Arguments:
@@ -39,12 +41,13 @@ Options:
           Display results in realtime, rather than collecting first and displaying later.
           This will result in a significant drop in performance due to the constant terminal output.
 
-  -c, --csum
+  -c, --checksum
           Output an index containing the hash of every file using the specified algorithm.
-          Uses the default algorithm. To specify one use --calgo. Note: specifying --calgo makes this redundant.
+          Uses the default algorithm. To specify one use --calgo. 
+          Note: specifying --calgo makes this redundant.
 
-  -C, --calgo <algorithm>
-          Performs --csum but with the specified hashing algorithm.
+  -C, --checksum-with <algorithm>
+          Performs --checksum but with the specified hashing algorithm.
           Using xxh3 is the recommended choice. Unless you have a reason to use something else,
           stick with the default. SHA2 and MD5 are provided for compatibility with other tools
           and existing data. If you're only using jw, you stand to gain a large increase in
@@ -52,11 +55,6 @@ Options:
 
           [default: xxh3]
           [possible values: xxh3, sha224, sha256, sha384, sha512, md5]
-
-  -t, --threads <count>
-          The number of threads to use to hash files in parallel.
-
-          [default: 1]
 
   -D, --diff <file1> <file2>...
           Validate hashes from two or more files containing output from `jw --checksum`
@@ -74,6 +72,9 @@ Options:
           Exclude one more types of entries, separated by coma.
 
           [possible values: files, dirs, dot, other]
+
+  -S, --silent
+          Suppress output, useful for benchmarking, or just counting files via --stats
 
   -s, --stats
           Count the number of files, dirs, and other entries, and print at the end.
