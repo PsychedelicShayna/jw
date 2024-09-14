@@ -345,7 +345,7 @@ fn checksum_diff(paths: &[String], print_stats: bool) {
 
 fn main() {
     let matches = Command::new("jw")
-        .version("2.0")
+        .version("2.2.3")
         .about("A CLI frontend to jwalk for blazingly fast filesystem traversal!")
         .arg(Arg::new("live-print")
             .long("live")
@@ -356,17 +356,27 @@ fn main() {
 This will result in a significant drop in performance due to the constant terminal output."))
 
         .arg(Arg::new("checksum")
-            .long("checksum")
+            .long("csum")
             .short('c')
-            .num_args(0..=1)
+            .action(ArgAction::SetTrue)
+            .help("Output an index containing the hash of every file using the specified algorithm.")
+            .long_help("Output an index containing the hash of every file using the specified algorithm.
+Uses the default algorithm. To specify one use --calgo. Note: specifying --calgo makes this redundant."))
+
+        .arg(Arg::new("checksum-algo")
+            .long("calgo")
+            .short('C')
             .value_parser(["xxh3", "sha224", "sha256", "sha384", "sha512", "md5"])
+            .default_value("xxh3")
             .ignore_case(true)
             .value_name("algorithm")
-            .help("Output an index containing the hash of every file using the specified algorithm.")
-            .long_help(
-"Output an index containing the hash of every file using the specified algorithm.
-It is highly recommended you stick with xxh3, as it is significantly more performant,
-and directly suited for this use case. SHA2/MD5 are only provided for compatibility."))
+            .default_value("xxh3")
+            .help("Performs --csum but with the specified hashing algorithm.")
+            .long_help("Performs --csum but with the specified hashing algorithm.
+Using xxh3 is the recommended choice. Unless you have a reason to use something else, 
+stick with the default. SHA2 and MD5 are provided for compatibility with other tools 
+and existing data. If you're only using jw, you stand to gain a large increase in 
+performance by using xxh3."))
 
         .arg(Arg::new("checksum-threads")
             .long("threads")
@@ -378,7 +388,7 @@ and directly suited for this use case. SHA2/MD5 are only provided for compatibil
 
         .arg(Arg::new("hdiff")
             .long("diff")
-            .short('C')
+            .short('D')
             .value_names(["file1", "file2"])
             .num_args(2..)
             .help("Validate hashes from two or more files containing output from `jw --checksum`")
@@ -455,12 +465,14 @@ files you're traversing, the more it begins to add up.")
     let options = Options {
         live_print: *matches.get_one::<bool>("live-print").unwrap_or(&false),
         exclude: exclude_flags,
-        checksum: matches.contains_id("checksum").then(|| {
-            matches
-                .get_one::<String>("checksum")
-                .map(HashAlgorithm::from)
-                .unwrap_or(HashAlgorithm::Xxh3)
-        }),
+        checksum: (matches.contains_id("checksum") || matches.contains_id("checksum-algo")).then(
+            || {
+                matches
+                    .get_one::<String>("checksum-algo")
+                    .map(HashAlgorithm::from)
+                    .unwrap_or(HashAlgorithm::Xxh3)
+            },
+        ),
         checksum_threads: *matches.get_one("checksum-threads").unwrap_or(&1),
         depth: *matches.get_one("depth").unwrap_or(&0),
         directories: walk_dirs,
