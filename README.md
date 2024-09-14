@@ -13,7 +13,7 @@ It also doubles as a way to hash a very large number of files, thanks to the ins
 
 Rather than fancy colorized outputs, TUIs, gathering statistics, etc, jw sticks to the essentials, providing the raw performance without any of the bloat.
 
-It simply gives you the raw output as fast as possible, for you to pipe to other utilities, such as ripgrep/grep, xargs, and the like, with no additional nonsense.
+It simply gives you the raw output as fast as possible, for you to pipe to other utilities, such as ripgrep/grep, xargs, fzf, and the like, with no additional nonsense.
 
 
 https://github.com/user-attachments/assets/9f4a3cf5-4dfa-4a57-845b-a26ded3f660a
@@ -30,6 +30,11 @@ To give you a rough idea of the performance, JWalk was capable of traversing tho
 As for Xxh3 combined with JWalk, it was capable of hashing 7.2GB across more than 10,000 files, in **500 milliseconds**. Yes, it's that fast. Stupid fast.
 
 The SHA2 family and MD5 is also supported but that's only there for compatibility.
+
+### A Personal Request
+Making Rust go fast is a different beast than making C++ go fast. A lot of the techniques that came to mind when trying to squeeze even more performance out of this utility simply don't apply to Rust without breaking the spirit of the language. I'm not a Rust wizard, there's a lot I still don't know. However, I know for a fact that `jw` could run even faster. This [article proving that an optimization "impossible" in Rust, is possible in Rust](https://tunglevo.com/note/an-optimization-thats-impossible-in-rust/) is a prime example of how Rust has its own flavor of black magic I've yet to grasp. I welcome any and all PRs, it's a much appreciated learning experience. By all means, if you spot a way to make it faster, don't hesitate to make a PR, I'd love to learn, even if it's just shaving off a few milliseconds.
+
+The main aspiration I have for `jw` is **speed** above all else, both traversal and hashing, but especially hashing.
 
 
 https://github.com/user-attachments/assets/2db684a0-a6f6-4416-a2fc-4b65c0da5963
