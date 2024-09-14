@@ -20,7 +20,7 @@ categories = ["command-line-utilities", "filesystem"]
 keywords = ["jwalk", "diff", "file", "search", "hash" ]
 
 [dependencies]
-clap = { version = "4.5.17", features = ["derive"] }
+clap = { version = "4.5.17" }
 crossbeam-channel = "0.5.13"
 jwalk = "0.8.1"
 md5 = "0.7.0"
