@@ -40,6 +40,7 @@ struct Options {
     checksum_threads: usize,
     depth: usize,
     exclude: usize,
+    silent: bool,
     directories: Vec<String>,
     print_stats: bool,
 }
@@ -102,20 +103,34 @@ fn traverse(options: Options) {
             let results = walker.collect::<Vec<_>>();
 
             if options.print_stats {
-                for entry in results {
-                    let path = entry.path();
+                if options.silent {
+                    for entry in results {
+                        let path = entry.path();
 
-                    if path.is_file() {
-                        file_count += 1;
-                    } else if path.is_dir() {
-                        dir_count += 1;
-                    } else {
-                        other_count += 1;
+                        if path.is_file() {
+                            file_count += 1;
+                        } else if path.is_dir() {
+                            dir_count += 1;
+                        } else {
+                            other_count += 1;
+                        }
                     }
+                } else {
+                    for entry in results {
+                        let path = entry.path();
 
-                    println!("{}", entry.path().display());
+                        if path.is_file() {
+                            file_count += 1;
+                        } else if path.is_dir() {
+                            dir_count += 1;
+                        } else {
+                            other_count += 1;
+                        }
+
+                        println!("{}", entry.path().display());
+                    }
                 }
-            } else {
+            } else if !options.silent {
                 for entry in results {
                     println!("{}", entry.path().display());
                 }
@@ -217,7 +232,7 @@ fn checksum(options: &Options, algorithm: &HashAlgorithm) {
         handle.join().unwrap();
     }
 
-    if !options.live_print {
+    if !options.live_print && !options.silent {
         while !receive_hashes_rx.is_empty() {
             if let Ok(hash) = receive_hashes_rx.recv_timeout(Duration::from_millis(100)) {
                 println!("{}", hash);
@@ -417,6 +432,12 @@ present in the first file, that will be reported as well."))
             .help("Exclude one more types of entries, separated by coma.")
             .num_args(0..=4))
 
+        .arg(Arg::new("silent")
+            .long("silent")
+            .short('S')
+            .action(ArgAction::SetTrue)
+            .help("Suppress output, useful for benchmarking, or just counting files via --stats"))
+
         .arg(Arg::new("stats")
             .long("stats")
             .short('s')
@@ -463,7 +484,6 @@ files you're traversing, the more it begins to add up.")
             })
     });
 
-
     let checksum_mode = matches!(
         matches.value_source("checksum"),
         Some(ValueSource::CommandLine)
@@ -481,6 +501,7 @@ files you're traversing, the more it begins to add up.")
                 .map(HashAlgorithm::from)
                 .unwrap_or(HashAlgorithm::Xxh3)
         }),
+        silent: *matches.get_one::<bool>("silent").unwrap_or(&false),
         checksum_threads: *matches.get_one("checksum-threads").unwrap_or(&1),
         depth: *matches.get_one("depth").unwrap_or(&0),
         directories: walk_dirs,
