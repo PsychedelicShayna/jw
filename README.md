@@ -26,8 +26,6 @@ The SHA2 family and MD5 is also supported but that's only there for compatibilit
 ## Usage
 
 ```
-A CLI frontend to jwalk for blazingly fast filesystem traversal!
-
 Usage: jw [OPTIONS] [directories]...
 
 Arguments:
@@ -41,11 +39,18 @@ Options:
           Display results in realtime, rather than collecting first and displaying later.
           This will result in a significant drop in performance due to the constant terminal output.
 
-  -c, --checksum [<algorithm>]
+  -c, --csum
           Output an index containing the hash of every file using the specified algorithm.
-          It is highly recommended you stick with xxh3, as it is significantly more performant,
-          and directly suited for this use case. SHA2/MD5 are only provided for compatibility.
+          Uses the default algorithm. To specify one use --calgo. Note: specifying --calgo makes this redundant.
 
+  -C, --calgo <algorithm>
+          Performs --csum but with the specified hashing algorithm.
+          Using xxh3 is the recommended choice. Unless you have a reason to use something else,
+          stick with the default. SHA2 and MD5 are provided for compatibility with other tools
+          and existing data. If you're only using jw, you stand to gain a large increase in
+          performance by using xxh3.
+
+          [default: xxh3]
           [possible values: xxh3, sha224, sha256, sha384, sha512, md5]
 
   -t, --threads <count>
@@ -53,7 +58,7 @@ Options:
 
           [default: 1]
 
-  -C, --diff <file1> <file2>...
+  -D, --diff <file1> <file2>...
           Validate hashes from two or more files containing output from `jw --checksum`
           The first file will be treated as the "correct" one; any discrepant hashes
           in the subseqeunt files will be reported. If entries from the first file are
