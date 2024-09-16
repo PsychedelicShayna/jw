@@ -167,7 +167,6 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
             });
 
         let hashes: Vec<(String, String)> = if options.live_print {
-            println!("{}", algorithm.digest_size());
             walker
                 .filter_map(|file_path| {
                     hash_file!(algorithm, &file_path)
@@ -189,7 +188,6 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
         };
 
         if !options.silent && !options.live_print {
-            println!("{}", algorithm.digest_size());
             for (file_path, hash) in hashes {
                 println!("{}{}", hash, file_path);
             }
