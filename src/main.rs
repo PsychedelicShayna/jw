@@ -197,7 +197,7 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
     }
 }
 
-fn checksum_diff(paths: &[String], print_stats: bool) {
+fn checksum_diff(algorithm: HashAlgorithm, paths: &[String], print_stats: bool) {
     let mut paths = paths.iter();
 
     let convert = |path: &String| -> Option<PathBuf> {
@@ -225,35 +225,25 @@ fn checksum_diff(paths: &[String], print_stats: bool) {
         .filter_map(convert)
         .collect();
 
+    let digest_length: usize = algorithm.digest_size() * 2;
+
     let read_hashes = |file: &PathBuf| -> HashMap<String, String> {
-        let parse_line = |line: String, hash_length: usize| -> Option<(String, String)> {
-            line.split_at_checked(hash_length)
+        let parse_line = |line: String| -> Option<(String, String)> {
+            line.split_at_checked(digest_length)
                 .map(|(hash, line)| (line.to_string(), hash.to_string()))
         };
 
-        let mut line_reader = BufReader::new(File::open(file).unwrap_or_else(|e| {
+        let line_reader = BufReader::new(File::open(file).unwrap_or_else(|e| {
             eprintln!("Failed to open file: {}", e);
             exit(1);
         }))
         .lines()
         .map_while(Result::ok);
 
-        let digest_length: usize = line_reader
-            .next()
-            .and_then(|line| line.parse::<usize>().ok())
-            .unwrap_or_else(|| {
-                eprintln!(
-                    "Failed to parse the first line as a valid hash hexdigest length for: {:?}",
-                    file
-                );
-                exit(1);
-            }) * 2;
-
-        line_reader.filter_map(|line| parse_line(line, digest_length)).collect()
+        line_reader.filter_map(parse_line).collect()
     };
 
     let base_hashes: HashMap<String, String> = read_hashes(&base_file);
-
 
     let subsequent_hash_files: Vec<(HashMap<String, String>, PathBuf)> = subsequent_files
         .into_iter()
@@ -288,7 +278,6 @@ fn checksum_diff(paths: &[String], print_stats: bool) {
     }
 
     for (other_hashes, hash_file) in &subsequent_hash_files {
-
         for (file_name, other_hash) in other_hashes {
             if !base_hashes.contains_key(file_name) {
                 msg_excess.push(format!(
@@ -420,7 +409,15 @@ files you're traversing, the more it begins to add up.")
             .map(|s| s.to_string())
             .collect::<Vec<String>>()
     }) {
-        checksum_diff(&checksum_files, *matches.get_one("stats").unwrap_or(&false));
+        checksum_diff(
+            HashAlgorithm::from(
+                matches
+                    .get_one::<String>("checksum-algo")
+                    .unwrap_or(&"xxh3".to_string()),
+            ),
+            &checksum_files,
+            *matches.get_one("stats").unwrap_or(&false),
+        );
         exit(0);
     }
 
