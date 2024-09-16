@@ -167,11 +167,12 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
             });
 
         let hashes: Vec<(String, String)> = if options.live_print {
+            println!("{}", algorithm.digest_size());
             walker
                 .filter_map(|file_path| {
                     hash_file!(algorithm, &file_path)
                         .map(|hash| {
-                            println!("{}:{}", file_path, hash);
+                            println!("{}{}", file_path, hash);
                             (file_path, hash)
                         })
                         .ok()
@@ -188,8 +189,9 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
         };
 
         if !options.silent && !options.live_print {
+            println!("{}", algorithm.digest_size());
             for (file_path, hash) in hashes {
-                println!("{}:{}", hash, file_path);
+                println!("{}{}", hash, file_path);
             }
         }
     }
@@ -224,22 +226,34 @@ fn checksum_diff(paths: &[String], print_stats: bool) {
         .collect();
 
     let read_hashes = |file: &PathBuf| -> HashMap<String, String> {
-        let parse_line = |line: String| -> Option<(String, String)> {
-            let mut parts = line.split(':').rev().map(&str::to_string);
-            Some((parts.next()?, parts.next()?))
+        let parse_line = |line: String, hash_length: usize| -> Option<(String, String)> {
+            line.split_at_checked(hash_length)
+                .map(|(hash, line)| (line.to_string(), hash.to_string()))
         };
 
-        BufReader::new(File::open(file).unwrap_or_else(|e| {
+        let mut line_reader = BufReader::new(File::open(file).unwrap_or_else(|e| {
             eprintln!("Failed to open file: {}", e);
             exit(1);
         }))
         .lines()
-        .map_while(Result::ok)
-        .filter_map(parse_line)
-        .collect()
+        .map_while(Result::ok);
+
+        let digest_length: usize = line_reader
+            .next()
+            .and_then(|line| line.parse::<usize>().ok())
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "Failed to parse the first line as a valid hash hexdigest length for: {:?}",
+                    file
+                );
+                exit(1);
+            }) * 2;
+
+        line_reader.filter_map(|line| parse_line(line, digest_length)).collect()
     };
 
     let base_hashes: HashMap<String, String> = read_hashes(&base_file);
+
 
     let subsequent_hash_files: Vec<(HashMap<String, String>, PathBuf)> = subsequent_files
         .into_iter()
@@ -274,10 +288,11 @@ fn checksum_diff(paths: &[String], print_stats: bool) {
     }
 
     for (other_hashes, hash_file) in &subsequent_hash_files {
+
         for (file_name, other_hash) in other_hashes {
             if !base_hashes.contains_key(file_name) {
                 msg_excess.push(format!(
-                    "[+({})] {}:{}",
+                    "[+({})] {} {}",
                     hash_file.display(),
                     other_hash,
                     file_name

@@ -22,6 +22,19 @@ pub enum HashAlgorithm {
     Md5,
 }
 
+impl HashAlgorithm {
+    pub fn digest_size(&self) -> usize {
+        match self {
+            Self::Xxh3 => 16,
+            Self::Sha224 => 28,
+            Self::Sha256 => 32,
+            Self::Sha384 => 48,
+            Self::Sha512 => 64,
+            Self::Md5 => 16,
+        }
+    }
+}
+
 impl From<&String> for HashAlgorithm {
     fn from(s: &String) -> Self {
         match s.to_lowercase().as_str() {
