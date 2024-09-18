@@ -317,7 +317,7 @@ fn checksum_diff(algorithm: HashAlgorithm, paths: &[String], print_stats: bool) 
 
 fn main() {
     let matches = Command::new("jw")
-        .version("2.2.7")
+        .version("2.2.8")
         .about("A CLI frontend to jwalk for blazingly fast filesystem traversal!")
         .arg(Arg::new("live-print")
             .long("live")
