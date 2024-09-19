@@ -331,9 +331,10 @@ This will result in a significant drop in performance due to the constant termin
             .long("checksum")
             .short('c')
             .action(ArgAction::SetTrue)
-            .help("Output an index containing the hash of every file using the specified algorithm.")
-            .long_help("Output an index containing the hash of every file using the specified algorithm.
-Uses the default algorithm. To specify one use --calgo. Note: specifying --calgo makes this redundant."))
+            .help("Generate an index of file hashes and their associated file names, and print it.")
+            .long_help("Generate an index of file hashes and their associated file names, and print it.
+The algorithm used by default is Xxh3, which is the recommended choice. Though
+if you want to use a different algorithm, use --checksum-with (-C) instead."))
 
         .arg(Arg::new("checksum-algo")
             .long("checksum-with")
@@ -345,10 +346,9 @@ Uses the default algorithm. To specify one use --calgo. Note: specifying --calgo
             .default_value("xxh3")
             .help("Performs --checksum but with the specified hashing algorithm.")
             .long_help("Performs --checksum but with the specified hashing algorithm.
-Using xxh3 is the recommended choice. Unless you have a reason to use something else, 
-stick with the default. SHA2 and MD5 are provided for compatibility with other tools 
-and existing data. If you're only using jw, you stand to gain a large increase in 
-performance by using xxh3."))
+If another argument changes the operating mode of the program, e.g. --diff, then
+the algorithm specified will only be stored, and no checksum will be performed.
+Stick to Xxh3 and just use -c unless you have a reason to use a different one."))
 
         .arg(Arg::new("hdiff")
             .long("diff")
@@ -360,7 +360,14 @@ performance by using xxh3."))
 The first file will be treated as the \"correct\" one; any discrepant hashes
 in the subseqeunt files will be reported. If entries from the first file are
 missing in the subsequent files, or if the subsequent files have entries not 
-present in the first file, that will be reported as well."))
+present in the first file, that will be reported as well.
+
+The hash length must be known for -D to parse the input files and separate
+hashes from file paths. A length of 16 is assumed by default as that's how
+long Xxh3 hashes are. If you used a different algorithm however, then you
+must specify the algorithm before -D, e.g. `jw -C sha256 -D file1 file2`
+
+If you stuck with defaults: `jw -c`, then you can just `jw -D file1 file2`"))
 
         .arg(Arg::new("depth")
             .long("depth")
@@ -392,8 +399,9 @@ present in the first file, that will be reported as well."))
             .action(ArgAction::SetTrue)
             .help("Count the number of files, dirs, and other entries, and print at the end.")
             .long_help("Count the number of files, dirs, and other entries, and print at the end.
-This will decrease performance. Unnoticeable in most cases, but the more 
-files you're traversing, the more it begins to add up.")
+This will decrease performance. This will cause a significant slowdown
+and is primarily here for debugging or benchmarking. A more efficient
+method to do this will be implemented in the future.")
             )
 
         .arg(Arg::new("directories")
