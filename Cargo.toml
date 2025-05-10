@@ -19,7 +19,7 @@ keywords = ["jwalk", "diff", "file", "search", "hash" ]
 
 [dependencies]
 clap = { version = "4.5.17" }
-crossbeam-channel = "0.5.13"
+crossbeam-channel = "0.5.15"
 jwalk = "0.8.1"
 md5 = "0.7.0"
 memmap2 = "0.9.5"
