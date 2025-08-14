@@ -10,6 +10,7 @@ use std::{
     io::{BufRead, BufReader},
 };
 
+
 #[macro_use]
 pub mod hashutil;
 use hashutil::*;
@@ -171,7 +172,7 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
                 .filter_map(|file_path| {
                     hash_file!(algorithm, &file_path)
                         .map(|hash| {
-                            println!("{}{}", file_path, hash);
+                            println!("{}{}", hash, file_path);
                             (file_path, hash)
                         })
                         .ok()
@@ -289,6 +290,10 @@ fn checksum_diff(algorithm: HashAlgorithm, paths: &[String], print_stats: bool) 
             }
         }
     }
+
+    msg_mismatches.sort();
+    msg_missing.sort();
+    msg_excess.sort();
 
     for msg in msg_mismatches
         .iter()
