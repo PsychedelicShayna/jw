@@ -15,6 +15,7 @@ use memmap3::Mmap;
 #[derive(Debug, Clone)]
 pub enum HashAlgorithm {
     Xxh3,
+    Blake3,
     Sha224,
     Sha256,
     Sha384,
@@ -26,6 +27,7 @@ impl HashAlgorithm {
     pub fn digest_size(&self) -> usize {
         match self {
             Self::Xxh3 => 16,
+            Self::Blake3 => 32,
             Self::Sha224 => 28,
             Self::Sha256 => 32,
             Self::Sha384 => 48,
@@ -39,6 +41,7 @@ impl From<&String> for HashAlgorithm {
     fn from(s: &String) -> Self {
         match s.to_lowercase().as_str() {
             "xxh3" => Self::Xxh3,
+            "blake3" => Self::Blake3,
             "sha224" => Self::Sha224,
             "sha256" => Self::Sha256,
             "sha384" => Self::Sha384,
@@ -53,6 +56,7 @@ macro_rules! hash_file {
     ($algo:expr, $path:expr) => {
         match $algo {
             HashAlgorithm::Xxh3 => hash_file::<Xxh3Default>($path),
+            HashAlgorithm::Blake3 => hash_file_blake3($path),
             HashAlgorithm::Sha224 => hash_file::<Sha224>($path),
             HashAlgorithm::Sha256 => hash_file::<Sha256>($path),
             HashAlgorithm::Sha384 => hash_file::<Sha384>($path),
@@ -60,6 +64,36 @@ macro_rules! hash_file {
             HashAlgorithm::Md5 => hash_file::<Md5Context>($path),
         }
     };
+}
+
+/// Special-case file hashing for BLAKE3 so we can use update_mmap_rayon when appropriate.
+pub fn hash_file_blake3(path: &String) -> std::io::Result<String> {
+    // Open and get size as you already do
+    let mut file = File::open(path)?;
+    let _ = file.seek(SeekFrom::End(0));
+    let file_size = file.stream_position().unwrap_or(0);
+    let _ = file.seek(SeekFrom::Start(0));
+
+    // Threshold to switch to multithreaded update; tune for your CPU/dataset.
+    // The blake3 crate notes update_rayon tends to be slower under ~128 KiB.
+    const RAYON_THRESHOLD: u64 = 128 * 1024; // 128 KiB
+
+    let mut hasher = blake3::Hasher::new();
+
+    if file_size >= RAYON_THRESHOLD {
+        // update_mmap_rayon requires `mmap` + `rayon` features on the crate.
+        // It will memory-map and use a rayon-based internal strategy.
+        // It returns a Result<&mut Hasher, std::io::Error>
+        hasher.update_mmap_rayon(path)?;
+    } else {
+        // small files: map where helpful; otherwise single-thread update
+        let mmap = unsafe { Mmap::map(&file)? };
+        // let mut hh = Xxh3Default::create();
+        // hh.update(input);
+        hasher.update(&mmap);
+    }
+
+    Ok(hexlify(hasher.finalize().as_bytes().to_vec()))
 }
 
 pub fn hash_file<H: Hasher>(path: &String) -> std::io::Result<String> {
