@@ -2,6 +2,8 @@ use clap::parser::ValueSource;
 use clap::{self, value_parser, Arg, ArgAction, Command};
 use jwalk::WalkDir;
 use rayon::iter::*;
+use std::fs;
+use std::hash::BuildHasher;
 use std::path::PathBuf;
 use std::process::exit;
 use std::{
@@ -9,7 +11,6 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
 };
-
 
 #[macro_use]
 pub mod hashutil;
@@ -320,7 +321,63 @@ fn checksum_diff(algorithm: HashAlgorithm, paths: &[String], print_stats: bool) 
     }
 }
 
+// // pub use gxhash;
+// pub use rapidhash;
+//
+pub use std::env;
+// pub use std::io;
+// pub use std::os;
+//
+// How do you read CLI args in Rust manually?
+// Answer: You can use std::env::args() to read CLI args in Rust manually.
+
 fn main() {
+    let arguments: Vec<String> = env::args().collect();
+
+    let mut maybe_file: Option<String> = None;
+    maybe_file = arguments.get(1).cloned();
+
+    let mut maybe_type = arguments.get(2).cloned();
+
+    let mut file: String;
+
+    if let Some(file_name) = maybe_file {
+        println!("File: {}", file_name);
+        file = file_name;
+    } else {
+        eprintln!("cannot open file");
+        return;
+    }
+
+    // let fh = fs::OpenOptions::new()
+    //     .read(true)
+    //     .write(false)
+    //     .open(file)
+    //     .expect("failed to poen file handle");
+    //
+
+    let h = if maybe_type.is_none() {
+        hash_xxh3_pfm_pool_fbbb(&file)
+    } else {
+        hash_xxh3_reference(&file)
+    };
+
+    match h {
+        Ok(r) => println!("{}", r),
+        Err(e) => println!("{}", e),
+    }
+
+    // let mut rh = rapidhash::fast::RapidHasher::default();
+    // let h = rapidhash::v3::rapidhash_v3_file(fh).unwrap();
+
+    // let mut gx = gxhash::GxBuildHasher::default();
+    // let mut hasher = gx.build_hasher();
+    //
+    // gxhash::GxBuildHasher::default()
+    //     .build_hasher()
+    //     .write(b"example data");
+
+    return;
     let matches = Command::new("jw")
         .version("2.2.10")
         .about("A CLI frontend to jwalk for blazingly fast filesystem traversal!")
@@ -344,7 +401,7 @@ if you want to use a different algorithm, use --checksum-with (-C) instead."))
         .arg(Arg::new("checksum-algo")
             .long("checksum-with")
             .short('C')
-            .value_parser(["xxh3", "sha224", "sha256", "sha384", "sha512", "md5"])
+            .value_parser(["xxh3", "rapidhash", "gxhash", "blake3", "sha224", "sha256", "sha384", "sha512", "md5"])
             .default_value("xxh3")
             .ignore_case(true)
             .value_name("algorithm")

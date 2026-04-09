@@ -1,0 +1,3 @@
+# .cargo/config.toml (optional)
+[build]
+rustflags = ["-C", "target-cpu=native"]
