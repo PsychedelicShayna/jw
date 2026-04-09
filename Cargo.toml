@@ -18,6 +18,7 @@ categories = ["command-line-utilities", "filesystem"]
 keywords = ["jwalk", "diff", "file", "search", "hash" ]
 
 [dependencies]
+blake3 = { version = "1.8.4", features = ["rayon", "mmap"] }
 clap = { version = "4.5.17" }
 crossbeam-channel = "0.5.15"
 jwalk = "0.8.1"
