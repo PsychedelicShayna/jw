@@ -9,7 +9,7 @@ pub use sha2::{Sha224, Sha256, Sha384, Sha512};
 
 pub use xxhash_rust::xxh3::Xxh3Default; // <3
 
-use memmap2::Mmap;
+use memmap3::Mmap;
 
 
 #[derive(Debug, Clone)]
