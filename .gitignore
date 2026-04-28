@@ -1,3 +1,9 @@
+*
 target/
 build/
 .test
+!src/
+!Cargo.toml
+!Cargo.lock
+!LICENSE
+!README.md
