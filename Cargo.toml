@@ -28,4 +28,6 @@ rayon = "1.10.0"
 sha2 = "0.10.8"
 xxhash-rust = { version = "0.8.12", features = ["xxh3", "const_xxh3"] }
 
-
+# [profile.release]
+# debug = true
+# strip = false
