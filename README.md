@@ -54,19 +54,25 @@ https://github.com/user-attachments/assets/9d959641-2fcd-41bc-b397-2d7098d59174
 
 An index entry is identified by its path, and `jw` records paths exactly the way you typed them. That's fine when you're re-checking the same directory later, but it falls apart the moment you want to compare two copies of the same data living under different roots: `/mnt/backup1/photos/cat.jpg` and `/mnt/backup2/photos/cat.jpg` are the same bytes, but `--diff` has no way to tell, so every single entry gets reported as missing on one side and excess on the other.
 
-`--relative-to` (`-r`) fixes that by lopping a prefix off of every path before it goes into the index. Point it at the scan root and you get an index keyed by paths within the tree, which is directly comparable to any other index taken the same way:
+The old answer was to `cd` into each tree and index `.`, so both came out as `./photos/cat.jpg`. `--relative-to` (`-r`) is that, without the `cd`: it makes `jw` behave as if the given path were the current directory.
 
 ```sh
-jw -c -r /mnt/backup1 /mnt/backup1 > backup1.hf
-jw -c -r /mnt/backup2 /mnt/backup2 > backup2.hf
+jw -c -r /mnt/backup1 > backup1.hf     # same bytes as: cd /mnt/backup1 && jw -c
+jw -c -r /mnt/backup2 > backup2.hf
 jw -s -D backup1.hf backup2.hf
 ```
 
-The point is that you no longer have to be standing in the directory for this to work. Previously the only way to get comparable indexes was to `cd` into each tree and scan `.`, because that's the only way `jw` would record short paths; give it an absolute path and everything came out absolute and nothing lined up. Now you can stay wherever you are, address both trees absolutely, and still get indexes that diff against each other.
+Directories default to `.` and relative ones resolve under the base, so `jw -c -r /mnt/backup1 photos` records `photos/cat.jpg`, as it would from a shell sitting there. An absolute directory is walked as typed, has to be under the base, and is recorded with the base removed.
 
-The prefix is stripped lexically, nothing is canonicalized, and a base that isn't an ancestor of what you're walking is rejected rather than quietly ignored. The output format itself hasn't changed at all, so indexes you already have still diff exactly the way they always did.
+`--diff` takes `-r` as well, for indexes you already wrote with absolute paths. The base is stripped from that index's entries on the way in, so nothing has to be re-indexed. Give it once for every index, or once per index, in order, and it can sit right after the index it belongs to:
 
-One thing to watch: `-r <root> <root>` records `sub/file`, while the old `cd` in and scan `.` approach records `./sub/file`. Each is fine on its own, but don't diff one against the other -- index both trees the same way.
+```sh
+jw -s -D backup1.hf -r /mnt/backup1 backup2.hf -r /mnt/backup2
+```
+
+A leading `./` is ignored when comparing, so an index taken by `cd`'ing in, one taken with `-r`, and an absolute one paired with `-r` under `--diff` all agree with each other.
+
+Everything is lexical. Nothing is canonicalized, because jwalk records paths spelled exactly the way the root was typed, symlinks and all, so the base has to be spelled the way the directories are.
 
 ## Usage
 
@@ -78,7 +84,7 @@ Usage: jw [OPTIONS] [directories]...
 Arguments:
   [directories]...
           The target directories to traverse, can be multiple. Use - to read paths from stdin, one per line.
-
+          
           [default: .]
 
 Options:
@@ -96,7 +102,7 @@ Options:
           If another argument changes the operating mode of the program, e.g. --diff, then
           the algorithm specified will only be stored, and no checksum will be performed.
           Stick to Xxh3 and just use -c unless you have a reason to use a different one.
-
+          
           [default: xxh3]
           [possible values: xxh3, blake3, sha224, sha256, sha384, sha512, md5]
 
@@ -104,53 +110,58 @@ Options:
           Validate hashes from two or more files containing output from `jw --checksum`
           The first file will be treated as the "correct" one; any discrepant hashes
           in the subseqeunt files will be reported. If entries from the first file are
-          missing in the subsequent files, or if the subsequent files have entries not
+          missing in the subsequent files, or if the subsequent files have entries not 
           present in the first file, that will be reported as well.
-
+          
           The hash length must be known for -D to parse the input files and separate
           hashes from file paths. A length of 16 is assumed by default as that's how
           long Xxh3 hashes are. If you used a different algorithm however, then you
           must specify the algorithm before -D, e.g. `jw -C sha256 -D file1 file2`
-
+          
           If you stuck with defaults: `jw -c`, then you can just `jw -D file1 file2`
+          
+          Index files may also follow other options, so `-D a.hf -r /x b.hf -r /y` reads
+          the same as `-D a.hf b.hf -r /x -r /y`. See --relative-to for what that does.
 
   -r, --relative-to <path>
-          Record --checksum index paths relative to this path, instead of as given.
-          An index entry is identified by its path, so two indexes taken from two different
-          roots never line up under --diff; every entry looks new on both sides even when the
-          bytes are identical. Passing the scan root to --relative-to strips it back off of
-          every recorded path, making the two indexes directly comparable.
-
-            jw -c -r /mnt/backup1 /mnt/backup1 > a.hf
-            jw -c -r /mnt/backup2 /mnt/backup2 > b.hf
+          Behave as if this were the current directory, without cd'ing there.
+          An index entry is identified by its path, so two trees indexed from different
+          places never line up under --diff; every entry looks new on both sides even when
+          the bytes are identical. The fix used to be cd'ing into each root and indexing `.`
+          so both recorded `./sub/file`. --relative-to does that without the cd:
+          
+            jw -c -r /mnt/backup1 > a.hf        # records ./sub/file, as `cd /mnt/backup1; jw -c` would
+            jw -c -r /mnt/backup2 > b.hf
             jw -s -D a.hf b.hf
-
-          The output format is unchanged, so this only affects indexes written from now on;
-          existing ones still diff exactly as they always did.
-
-          The prefix is stripped lexically, component by component. Nothing is canonicalized,
-          because jwalk records paths spelled exactly the way you typed them, symlinks and all
-          (scanning `link` records `link/f`, not `real/f`), and resolving the base would leave
-          it unable to match those. Relative and absolute paths are both fine, but the base has
-          to be spelled the same way as the directories being walked; `-r . .` works, and so
-          does `-r /mnt/x /mnt/x`, while `-r /mnt/x .` does not. A base that isn't an ancestor
-          of every directory being walked is rejected outright rather than silently ignored,
-          as is using this without --checksum/--checksum-with, where there is no index for it
-          to affect. An entry that would strip down to nothing at all (a base naming the very
-          file being hashed) keeps its path as-is, rather than being recorded as a bare hash.
-
-          Note that `-r <root> <root>` records `sub/file`, whereas cd'ing in and running
-          `jw -c .` records `./sub/file`. Both are self-consistent, but don't diff one
-          against the other; pick one way and index both trees with it.
+          
+          With --checksum, directories default to `.` and relative ones resolve under the
+          base, exactly as they would from a shell sitting there. An absolute directory is
+          walked as typed and must sit under the base; it is recorded with the base removed.
+          
+          With --diff, the base is instead removed from the entries of an index that was
+          written with absolute paths, so old indexes diff without being rewritten. Give it
+          once to apply to every index, or once per index in order:
+          
+            jw -c /mnt/backup1 > a.hf           # entries are /mnt/backup1/sub/file
+            jw -c /mnt/backup2 > b.hf
+            jw -s -D a.hf b.hf -r /mnt/backup1 -r /mnt/backup2
+          
+          A leading `./` is ignored when comparing, so an index taken by cd'ing in, one
+          taken with -r, and an absolute one paired with -r under --diff all agree.
+          
+          Everything is lexical. Nothing is canonicalized, because jwalk records paths
+          spelled exactly the way the root was typed, symlinks and all (walking `link`
+          records `link/f`, not `real/f`), and resolving the base would leave it unable to
+          match those. Spell the base the way you spell the directories.
 
   -d, --depth <limit>
           The recursion depth limit. Setting this to 1 effectively disables recursion.
-
+          
           [default: 0]
 
-  -x, --exclude [<t1,t2>...]
-          Exclude one more types of entries, separated by coma.
-
+  -x, --exclude <t1,t2>
+          Exclude one or more types of entries, separated by comma.
+          
           [possible values: files, dirs, dot, other]
 
   -S, --silent

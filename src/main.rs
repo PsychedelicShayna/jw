@@ -145,25 +145,40 @@ fn traverse(options: Options) {
     }
 }
 
+/// A base given as a virtual cwd, in the form the string maths below want:
+/// no trailing slash, so `base + "/"` is the exact prefix a child carries.
+fn base_str(base: &Path) -> &str {
+    let s = base.to_str().expect("non-UTF-8 --relative-to");
+    if s.len() > 1 { s.trim_end_matches('/') } else { s }
+}
+
+/// What `cd base && jw <path-as-seen-from-there>` would have printed for a
+/// path jwalk produced while walking from outside. Purely textual: jwalk
+/// spells paths exactly the way the root was typed, symlinks and all, so
+/// canonicalizing would leave this unable to match anything.
+fn relativize(base: Option<&Path>, path: String) -> String {
+    let Some(base) = base else { return path };
+    let base = base_str(base);
+
+    match path.strip_prefix(base) {
+        Some(rest) if rest.starts_with('/') && rest.len() > 1 => rest[1..].to_string(),
+        _ => path,
+    }
+}
+
+/// Index entries have to key identically however the index was taken, so a
+/// leading `./` (what walking `.` produces) is dropped once the base is gone.
+fn index_key(base: Option<&Path>, path: String) -> String {
+    let path = relativize(base, path);
+    path.strip_prefix("./").map(str::to_string).unwrap_or(path)
+}
+
 fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
     let relative_to: Option<&Path> = options.relative_to.as_deref();
 
-    // What gets hashed is the path jwalk handed us; what gets *recorded* is that
-    // path with --relative-to lopped off the front, so that two indexes taken
-    // from two different roots end up keyed identically and can be diffed.
-    //
-    // The strip is purely lexical (component-wise, via strip_prefix); nothing is
-    // canonicalized. jwalk emits the root exactly as it was typed, symlinks and
-    // all, so resolving the base would leave it unable to match anything.
-    let relativize = |path: String| -> String {
-        let stripped = relative_to
-            .and_then(|base| Path::new(&path).strip_prefix(base).ok())
-            .filter(|stripped| !stripped.as_os_str().is_empty())
-            .and_then(Path::to_str)
-            .map(str::to_string);
-
-        stripped.unwrap_or(path)
-    };
+    // What gets hashed is the path jwalk hands us; what gets *recorded* is
+    // what the same walk would have printed with the base as cwd.
+    let relativize = |path: String| relativize(relative_to, path);
 
     for dir in &options.directories {
         let max_depth = if options.depth == 0 {
@@ -172,7 +187,14 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
             options.depth
         };
 
-        let walker = WalkDir::new(dir)
+        // A relative directory is relative to the virtual cwd, so it is walked
+        // from under the base; an absolute one is walked as typed.
+        let root: PathBuf = match relative_to {
+            Some(base) if !Path::new(dir).is_absolute() => base.join(dir),
+            _ => PathBuf::from(dir),
+        };
+
+        let walker = WalkDir::new(root)
             .skip_hidden((options.exclude & EXCLUDE_HIDDEN) != 0)
             .max_depth(max_depth)
             .into_iter()
@@ -217,40 +239,52 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
     }
 }
 
-fn checksum_diff(algorithm: HashAlgorithm, paths: &[String], print_stats: bool) {
-    let mut paths = paths.iter();
+fn checksum_diff(
+    algorithm: HashAlgorithm,
+    paths: &[String],
+    bases: &[PathBuf],
+    print_stats: bool,
+) {
+    if paths.len() < 2 {
+        eprintln!("Not enough files to perform a diff; need at least two.");
+        exit(1);
+    }
 
-    let convert = |path: &String| -> Option<PathBuf> {
-        Some(PathBuf::from(path))
-            .filter(|p| p.is_file())
-            .or_else(|| {
-                eprintln!("Doesn't exist/not a file: {:?}", path);
+    // One base for every index, one for all of them, or none at all.
+    let base_for = |i: usize| -> Option<&Path> {
+        match bases.len() {
+            0 => None,
+            1 => Some(bases[0].as_path()),
+            n if n == paths.len() => Some(bases[i].as_path()),
+            n => {
+                eprintln!(
+                    "--relative-to given {} times for {} indexes; give one per index, or one for all.",
+                    n,
+                    paths.len()
+                );
                 exit(1);
-            })
+            }
+        }
     };
 
-    let base_file: PathBuf = paths.next().and_then(convert).unwrap_or_else(|| {
-        eprintln!("Not enough files to perform a diff. Missing the first.");
-        exit(1);
-    });
-
-    let subsequent_files: Vec<PathBuf> = paths
-        .next()
-        .or_else(|| {
-            eprintln!("Not enough files to perform a diff. Missing the second.");
-            exit(1);
+    let files: Vec<PathBuf> = paths
+        .iter()
+        .map(|path| {
+            Some(PathBuf::from(path))
+                .filter(|p| p.is_file())
+                .unwrap_or_else(|| {
+                    eprintln!("Doesn't exist/not a file: {:?}", path);
+                    exit(1);
+                })
         })
-        .into_iter()
-        .chain(paths)
-        .filter_map(convert)
         .collect();
 
     let digest_length: usize = algorithm.digest_size() * 2;
 
-    let read_hashes = |file: &PathBuf| -> HashMap<String, String> {
+    let read_hashes = |file: &PathBuf, base: Option<&Path>| -> HashMap<String, String> {
         let parse_line = |line: String| -> Option<(String, String)> {
             line.split_at_checked(digest_length)
-                .map(|(hash, line)| (line.to_string(), hash.to_string()))
+                .map(|(hash, path)| (index_key(base, path.to_string()), hash.to_string()))
         };
 
         let line_reader = BufReader::new(File::open(file).unwrap_or_else(|e| {
@@ -263,11 +297,13 @@ fn checksum_diff(algorithm: HashAlgorithm, paths: &[String], print_stats: bool) 
         line_reader.filter_map(parse_line).collect()
     };
 
-    let base_hashes: HashMap<String, String> = read_hashes(&base_file);
+    let base_hashes: HashMap<String, String> = read_hashes(&files[0], base_for(0));
 
-    let subsequent_hash_files: Vec<(HashMap<String, String>, PathBuf)> = subsequent_files
+    let subsequent_hash_files: Vec<(HashMap<String, String>, PathBuf)> = files
         .into_iter()
-        .map(|pb| (read_hashes(&pb), pb))
+        .enumerate()
+        .skip(1)
+        .map(|(i, pb)| (read_hashes(&pb, base_for(i)), pb))
         .collect();
 
     let mut discrepancies: usize = 0;
@@ -380,7 +416,7 @@ Stick to Xxh3 and just use -c unless you have a reason to use a different one.")
             .long("diff")
             .short('D')
             .value_names(["file1", "file2"])
-            .num_args(2..)
+            .num_args(1..)
             .help("Validate hashes from two or more files containing output from `jw --checksum`")
             .long_help("Validate hashes from two or more files containing output from `jw --checksum`
 The first file will be treated as the \"correct\" one; any discrepant hashes
@@ -393,41 +429,47 @@ hashes from file paths. A length of 16 is assumed by default as that's how
 long Xxh3 hashes are. If you used a different algorithm however, then you
 must specify the algorithm before -D, e.g. `jw -C sha256 -D file1 file2`
 
-If you stuck with defaults: `jw -c`, then you can just `jw -D file1 file2`"))
+If you stuck with defaults: `jw -c`, then you can just `jw -D file1 file2`
+
+Index files may also follow other options, so `-D a.hf -r /x b.hf -r /y` reads
+the same as `-D a.hf b.hf -r /x -r /y`. See --relative-to for what that does."))
 
         .arg(Arg::new("relative-to")
             .long("relative-to")
             .short('r')
+            .action(ArgAction::Append)
             .value_parser(value_parser!(PathBuf))
             .value_name("path")
-            .help("Record --checksum index paths relative to this path, instead of as given.")
-            .long_help("Record --checksum index paths relative to this path, instead of as given.
-An index entry is identified by its path, so two indexes taken from two different
-roots never line up under --diff; every entry looks new on both sides even when the
-bytes are identical. Passing the scan root to --relative-to strips it back off of
-every recorded path, making the two indexes directly comparable.
+            .help("Behave as if this were the current directory, without cd'ing there.")
+            .long_help("Behave as if this were the current directory, without cd'ing there.
+An index entry is identified by its path, so two trees indexed from different
+places never line up under --diff; every entry looks new on both sides even when
+the bytes are identical. The fix used to be cd'ing into each root and indexing `.`
+so both recorded `./sub/file`. --relative-to does that without the cd:
 
-  jw -c -r /mnt/backup1 /mnt/backup1 > a.hf
-  jw -c -r /mnt/backup2 /mnt/backup2 > b.hf
+  jw -c -r /mnt/backup1 > a.hf        # records ./sub/file, as `cd /mnt/backup1; jw -c` would
+  jw -c -r /mnt/backup2 > b.hf
   jw -s -D a.hf b.hf
 
-The output format is unchanged, so this only affects indexes written from now on;
-existing ones still diff exactly as they always did.
+With --checksum, directories default to `.` and relative ones resolve under the
+base, exactly as they would from a shell sitting there. An absolute directory is
+walked as typed and must sit under the base; it is recorded with the base removed.
 
-The prefix is stripped lexically, component by component. Nothing is canonicalized,
-because jwalk records paths spelled exactly the way you typed them, symlinks and all
-(scanning `link` records `link/f`, not `real/f`), and resolving the base would leave
-it unable to match those. Relative and absolute paths are both fine, but the base has
-to be spelled the same way as the directories being walked; `-r . .` works, and so
-does `-r /mnt/x /mnt/x`, while `-r /mnt/x .` does not. A base that isn't an ancestor
-of every directory being walked is rejected outright rather than silently ignored,
-as is using this without --checksum/--checksum-with, where there is no index for it
-to affect. An entry that would strip down to nothing at all (a base naming the very
-file being hashed) keeps its path as-is, rather than being recorded as a bare hash.
+With --diff, the base is instead removed from the entries of an index that was
+written with absolute paths, so old indexes diff without being rewritten. Give it
+once to apply to every index, or once per index in order:
 
-Note that `-r <root> <root>` records `sub/file`, whereas cd'ing in and running
-`jw -c .` records `./sub/file`. Both are self-consistent, but don't diff one
-against the other; pick one way and index both trees with it."))
+  jw -c /mnt/backup1 > a.hf           # entries are /mnt/backup1/sub/file
+  jw -c /mnt/backup2 > b.hf
+  jw -s -D a.hf b.hf -r /mnt/backup1 -r /mnt/backup2
+
+A leading `./` is ignored when comparing, so an index taken by cd'ing in, one
+taken with -r, and an absolute one paired with -r under --diff all agree.
+
+Everything is lexical. Nothing is canonicalized, because jwalk records paths
+spelled exactly the way the root was typed, symlinks and all (walking `link`
+records `link/f`, not `real/f`), and resolving the base would leave it unable to
+match those. Spell the base the way you spell the directories."))
 
         .arg(Arg::new("depth")
             .long("depth")
@@ -470,14 +512,30 @@ method to do this will be implemented in the future.")
             .help("The target directories to traverse, can be multiple. Use - to read paths from stdin, one per line."))
         .get_matches();
 
-    if let Some(checksum_files) = matches.get_many::<String>("hdiff").map(|fp| {
+    let bases: Vec<PathBuf> = matches
+        .get_many::<PathBuf>("relative-to")
+        .map(|b| b.cloned().collect())
+        .unwrap_or_default();
+
+    let mut walk_dirs: Vec<String> = matches
+        .get_many::<String>("directories")
+        .map(|dirs| dirs.into_iter().map(|s| s.to_string()).collect())
+        .expect("No directories provided!");
+
+    let dirs_given = matches!(
+        matches.value_source("directories"),
+        Some(ValueSource::CommandLine)
+    );
+
+    if let Some(mut checksum_files) = matches.get_many::<String>("hdiff").map(|fp| {
         fp.into_iter()
             .map(|s| s.to_string())
             .collect::<Vec<String>>()
     }) {
-        if matches.get_one::<PathBuf>("relative-to").is_some() {
-            eprintln!("--relative-to applies to writing an index, not reading one; it has no effect on --diff.");
-            exit(1);
+        // An option between two index files ends -D's own values, so whatever
+        // landed in the positional slot is more index files, in order.
+        if dirs_given {
+            checksum_files.append(&mut walk_dirs);
         }
 
         checksum_diff(
@@ -487,15 +545,11 @@ method to do this will be implemented in the future.")
                     .unwrap_or(&"xxh3".to_string()),
             ),
             &checksum_files,
+            &bases,
             *matches.get_one("stats").unwrap_or(&false),
         );
         exit(0);
     }
-
-    let mut walk_dirs: Vec<String> = matches
-        .get_many::<String>("directories")
-        .map(|dirs| dirs.into_iter().map(|s| s.to_string()).collect())
-        .expect("No directories provided!");
 
     // clap swallows `--` as the end-of-options marker, so it can never reach us
     // as a value; `-` is the sentinel that actually arrives. It may sit among
@@ -524,7 +578,14 @@ method to do this will be implemented in the future.")
         Some(ValueSource::CommandLine)
     );
 
-    let relative_to: Option<PathBuf> = matches.get_one::<PathBuf>("relative-to").cloned();
+    let relative_to: Option<PathBuf> = match bases.len() {
+        0 => None,
+        1 => bases.into_iter().next(),
+        n => {
+            eprintln!("--relative-to given {} times; an index has one base.", n);
+            exit(1);
+        }
+    };
 
     if let Some(base) = &relative_to {
         // Only a checksum index records paths, so anywhere else this would be a
@@ -534,10 +595,15 @@ method to do this will be implemented in the future.")
             exit(1);
         }
 
-        // The strip is lexical, so a base that isn't a textual ancestor of a
-        // directory being walked would leave that directory's entries untouched
-        // and the resulting index half rewritten. Refuse up front instead.
-        if let Some(outside) = walk_dirs.iter().find(|d| !Path::new(d).starts_with(base)) {
+        // Relative directories resolve under the base, so they are always inside
+        // it. An absolute one is walked as typed, and the strip is lexical, so
+        // one that isn't textually under the base would leave its entries
+        // untouched and the index half rewritten. Refuse up front instead.
+        let outside = walk_dirs
+            .iter()
+            .find(|d| Path::new(d).is_absolute() && !Path::new(d).starts_with(base));
+
+        if let Some(outside) = outside {
             eprintln!(
                 "--relative-to {:?} is not an ancestor of {:?}; both must be spelled the same way (no canonicalization is performed).",
                 base, outside

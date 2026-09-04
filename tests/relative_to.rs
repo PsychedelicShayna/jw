@@ -274,27 +274,51 @@ fn only_the_given_base_is_stripped() {
 }
 
 #[test]
-fn relative_bases_are_accepted() {
-    let scratch = Scratch::new("relative");
-    let (_, _) = identical_trees(&scratch);
+fn base_alone_indexes_itself_like_a_cd_would() {
+    let scratch = Scratch::new("cwd");
+    let (one, _) = identical_trees(&scratch);
 
-    // Nothing is canonicalized, so a relative base matches a relative root.
-    let output = jw_in(scratch.path(), &["-c", "-r", "root-one", "root-one"]);
+    // No directories at all: the base is the tree, and the entries are spelled
+    // exactly as `cd root-one && jw -c` spells them.
+    let via_r = jw_in(scratch.path(), &["-c", "-r", "root-one"]);
+    let via_cd = jw_in(&one, &["-c"]);
+
+    assert!(via_r.status.success(), "{}", stderr_of(&via_r));
+
+    let paths_of = |o: &Output| {
+        let mut paths: Vec<String> = stdout_of(o)
+            .lines()
+            .map(|line| line.split_at(32).1.to_string())
+            .collect();
+        paths.sort();
+        paths
+    };
+
+    assert_eq!(paths_of(&via_r), ["./sub/nested.txt", "./top.txt"]);
+    assert_eq!(paths_of(&via_r), paths_of(&via_cd));
+}
+
+#[test]
+fn relative_directories_resolve_under_the_base() {
+    let scratch = Scratch::new("under");
+    let (one, _) = identical_trees(&scratch);
+
+    // `sub` is found beneath the base, and recorded as `sub/...`, which is what
+    // `cd root-one && jw -c sub` records.
+    let output = jw(&["-c", "-r", one.to_str().unwrap(), "sub"]);
 
     assert!(output.status.success(), "{}", stderr_of(&output));
 
-    let mut paths: Vec<String> = stdout_of(&output)
+    let paths: Vec<String> = stdout_of(&output)
         .lines()
         .map(|line| line.split_at(32).1.to_string())
         .collect();
 
-    paths.sort();
-
-    assert_eq!(paths, ["sub/nested.txt", "top.txt"]);
+    assert_eq!(paths, ["sub/nested.txt"]);
 }
 
 #[test]
-fn a_base_that_is_not_an_ancestor_is_rejected() {
+fn an_absolute_directory_outside_the_base_is_rejected() {
     let scratch = Scratch::new("ancestor");
     let (one, two) = identical_trees(&scratch);
 
@@ -302,15 +326,6 @@ fn a_base_that_is_not_an_ancestor_is_rejected() {
 
     assert!(!output.status.success(), "expected a rejection");
     assert!(stderr_of(&output).contains("is not an ancestor"));
-
-    // Absolute base against a relative root is the same mistake, lexically.
-    let mixed = jw_in(
-        scratch.path(),
-        &["-c", "-r", one.to_str().unwrap(), "root-one"],
-    );
-
-    assert!(!mixed.status.success(), "expected a rejection");
-    assert!(stderr_of(&mixed).contains("is not an ancestor"));
 }
 
 #[test]
@@ -325,23 +340,100 @@ fn relative_to_requires_checksum_mode() {
 }
 
 #[test]
-fn relative_to_is_rejected_alongside_diff() {
+fn diff_strips_a_base_per_index() {
     let scratch = Scratch::new("with-diff");
     let (one, two) = identical_trees(&scratch);
 
+    // Indexes written the old way, with absolute entries, still line up when
+    // --diff is told what each one's root was; the base may sit after its
+    // index file, as it reads most naturally.
     let index_one = write_index(&scratch, "one.hf", &one, None);
     let index_two = write_index(&scratch, "two.hf", &two, None);
 
     let output = jw(&[
+        "-s",
+        "-D",
+        index_one.to_str().unwrap(),
         "-r",
-        scratch.path().to_str().unwrap(),
+        one.to_str().unwrap(),
+        index_two.to_str().unwrap(),
+        "-r",
+        two.to_str().unwrap(),
+    ]);
+
+    assert!(
+        output.status.success(),
+        "expected a clean diff, got:\n{}",
+        stdout_of(&output)
+    );
+
+    // One base for three indexes is neither one-for-all nor one-each.
+    let index_three = write_index(&scratch, "three.hf", &one, None);
+
+    let uneven = jw(&[
         "-D",
         index_one.to_str().unwrap(),
         index_two.to_str().unwrap(),
+        index_three.to_str().unwrap(),
+        "-r",
+        one.to_str().unwrap(),
+        "-r",
+        two.to_str().unwrap(),
     ]);
 
+    assert!(!uneven.status.success(), "expected a rejection");
+    assert!(stderr_of(&uneven).contains("one per index"));
+}
+
+#[test]
+fn cd_made_and_base_made_indexes_agree_under_diff() {
+    let scratch = Scratch::new("agree");
+    let (one, two) = identical_trees(&scratch);
+
+    let via_cd = jw_in(&one, &["-c"]);
+    let via_r = jw(&["-c", "-r", two.to_str().unwrap()]);
+    let via_abs = jw(&["-c", one.to_str().unwrap()]);
+
+    let cd_index = scratch.path().join("cd.hf");
+    let r_index = scratch.path().join("r.hf");
+    let abs_index = scratch.path().join("abs.hf");
+
+    fs::write(&cd_index, &via_cd.stdout).unwrap();
+    fs::write(&r_index, &via_r.stdout).unwrap();
+    fs::write(&abs_index, &via_abs.stdout).unwrap();
+
+    // ./sub/file, ./sub/file, and /abs/one/sub/file with -r /abs/one all key
+    // as sub/file; the trailing empty base is `.`-shaped and strips nothing.
+    let output = jw(&[
+        "-s",
+        "-D",
+        cd_index.to_str().unwrap(),
+        r_index.to_str().unwrap(),
+        abs_index.to_str().unwrap(),
+        "-r",
+        ".",
+        "-r",
+        ".",
+        "-r",
+        one.to_str().unwrap(),
+    ]);
+
+    assert!(
+        output.status.success(),
+        "expected a clean diff, got:\n{}",
+        stdout_of(&output)
+    );
+}
+
+#[test]
+fn a_checksum_index_has_one_base() {
+    let scratch = Scratch::new("two-bases");
+    let (one, two) = identical_trees(&scratch);
+
+    let output = jw(&["-c", "-r", one.to_str().unwrap(), "-r", two.to_str().unwrap()]);
+
     assert!(!output.status.success(), "expected a rejection");
-    assert!(stderr_of(&output).contains("no effect on --diff"));
+    assert!(stderr_of(&output).contains("one base"));
 }
 
 #[test]
