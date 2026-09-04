@@ -15,16 +15,16 @@ use std::{
 pub mod hashutil;
 use hashutil::*;
 
+/// Paths from stdin, one per line. Whole lines, so paths with spaces survive;
+/// blank lines are skipped.
 fn read_stdin() -> Vec<String> {
-    let stdin = std::io::stdin();
-    let mut buffer = String::new();
-
-    stdin.read_line(&mut buffer).unwrap();
-
-    buffer
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>()
+    std::io::stdin()
+        .lock()
+        .lines()
+        .map_while(Result::ok)
+        .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 const EXCLUDE_FILES: usize = 1;
@@ -343,7 +343,7 @@ fn checksum_diff(algorithm: HashAlgorithm, paths: &[String], print_stats: bool) 
 
 fn main() {
     let matches = Command::new("jw")
-        .version("2.2.10")
+        .version(env!("CARGO_PKG_VERSION"))
         .about("A CLI frontend to jwalk for blazingly fast filesystem traversal!")
         .arg(Arg::new("live-print")
             .long("live")
@@ -444,8 +444,8 @@ against the other; pick one way and index both trees with it."))
             .value_parser(["files", "dirs", "dot", "other"])
             .value_name("t1,t2")
             .value_delimiter(',')
-            .help("Exclude one more types of entries, separated by coma.")
-            .num_args(0..=4))
+            .help("Exclude one or more types of entries, separated by comma.")
+            .num_args(1))
 
         .arg(Arg::new("silent")
             .long("silent")
@@ -467,7 +467,7 @@ method to do this will be implemented in the future.")
         .arg(Arg::new("directories")
             .default_value(".")
             .num_args(1..)
-            .help("The target directories to traverse, can be multiple. Use -- to read paths from stdin."))
+            .help("The target directories to traverse, can be multiple. Use - to read paths from stdin, one per line."))
         .get_matches();
 
     if let Some(checksum_files) = matches.get_many::<String>("hdiff").map(|fp| {
@@ -497,8 +497,11 @@ method to do this will be implemented in the future.")
         .map(|dirs| dirs.into_iter().map(|s| s.to_string()).collect())
         .expect("No directories provided!");
 
-    if walk_dirs.first().is_some_and(|s| s == "--") {
-        walk_dirs = read_stdin();
+    // clap swallows `--` as the end-of-options marker, so it can never reach us
+    // as a value; `-` is the sentinel that actually arrives. It may sit among
+    // real directories, and is replaced in place by the lines read from stdin.
+    if let Some(at) = walk_dirs.iter().position(|s| s == "-") {
+        walk_dirs.splice(at..=at, read_stdin());
     }
 
     let exclude_flags = matches.get_many::<String>("exclude").map_or(0, |flags| {

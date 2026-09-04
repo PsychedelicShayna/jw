@@ -77,7 +77,7 @@ Usage: jw [OPTIONS] [directories]...
 
 Arguments:
   [directories]...
-          The target directories to traverse, can be multiple. Use -- to read paths from stdin.
+          The target directories to traverse, can be multiple. Use - to read paths from stdin, one per line.
 
           [default: .]
 
