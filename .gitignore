@@ -3,6 +3,8 @@ target/
 build/
 .test
 !src/
+!tests/
+!tests/*.rs
 !Cargo.toml
 !Cargo.lock
 !LICENSE

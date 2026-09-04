@@ -2,7 +2,7 @@ use clap::parser::ValueSource;
 use clap::{self, value_parser, Arg, ArgAction, Command};
 use jwalk::WalkDir;
 use rayon::iter::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::{
     collections::HashMap,
@@ -41,6 +41,7 @@ struct Options {
     silent: bool,
     directories: Vec<String>,
     print_stats: bool,
+    relative_to: Option<PathBuf>,
 }
 
 fn traverse(options: Options) {
@@ -145,6 +146,25 @@ fn traverse(options: Options) {
 }
 
 fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
+    let relative_to: Option<&Path> = options.relative_to.as_deref();
+
+    // What gets hashed is the path jwalk handed us; what gets *recorded* is that
+    // path with --relative-to lopped off the front, so that two indexes taken
+    // from two different roots end up keyed identically and can be diffed.
+    //
+    // The strip is purely lexical (component-wise, via strip_prefix); nothing is
+    // canonicalized. jwalk emits the root exactly as it was typed, symlinks and
+    // all, so resolving the base would leave it unable to match anything.
+    let relativize = |path: String| -> String {
+        let stripped = relative_to
+            .and_then(|base| Path::new(&path).strip_prefix(base).ok())
+            .filter(|stripped| !stripped.as_os_str().is_empty())
+            .and_then(Path::to_str)
+            .map(str::to_string);
+
+        stripped.unwrap_or(path)
+    };
+
     for dir in &options.directories {
         let max_depth = if options.depth == 0 {
             usize::MAX
@@ -172,8 +192,9 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
                 .filter_map(|file_path| {
                     hash_file!(algorithm, &file_path)
                         .map(|hash| {
-                            println!("{}{}", hash, file_path);
-                            (file_path, hash)
+                            let recorded = relativize(file_path);
+                            println!("{}{}", hash, recorded);
+                            (recorded, hash)
                         })
                         .ok()
                 })
@@ -182,7 +203,7 @@ fn checksum_rayon(options: &Options, algorithm: &HashAlgorithm) {
             walker
                 .filter_map(|file_path| {
                     hash_file!(algorithm, &file_path)
-                        .map(|hash| (file_path, hash))
+                        .map(|hash| (relativize(file_path), hash))
                         .ok()
                 })
                 .collect()
@@ -374,6 +395,40 @@ must specify the algorithm before -D, e.g. `jw -C sha256 -D file1 file2`
 
 If you stuck with defaults: `jw -c`, then you can just `jw -D file1 file2`"))
 
+        .arg(Arg::new("relative-to")
+            .long("relative-to")
+            .short('r')
+            .value_parser(value_parser!(PathBuf))
+            .value_name("path")
+            .help("Record --checksum index paths relative to this path, instead of as given.")
+            .long_help("Record --checksum index paths relative to this path, instead of as given.
+An index entry is identified by its path, so two indexes taken from two different
+roots never line up under --diff; every entry looks new on both sides even when the
+bytes are identical. Passing the scan root to --relative-to strips it back off of
+every recorded path, making the two indexes directly comparable.
+
+  jw -c -r /mnt/backup1 /mnt/backup1 > a.hf
+  jw -c -r /mnt/backup2 /mnt/backup2 > b.hf
+  jw -s -D a.hf b.hf
+
+The output format is unchanged, so this only affects indexes written from now on;
+existing ones still diff exactly as they always did.
+
+The prefix is stripped lexically, component by component. Nothing is canonicalized,
+because jwalk records paths spelled exactly the way you typed them, symlinks and all
+(scanning `link` records `link/f`, not `real/f`), and resolving the base would leave
+it unable to match those. Relative and absolute paths are both fine, but the base has
+to be spelled the same way as the directories being walked; `-r . .` works, and so
+does `-r /mnt/x /mnt/x`, while `-r /mnt/x .` does not. A base that isn't an ancestor
+of every directory being walked is rejected outright rather than silently ignored,
+as is using this without --checksum/--checksum-with, where there is no index for it
+to affect. An entry that would strip down to nothing at all (a base naming the very
+file being hashed) keeps its path as-is, rather than being recorded as a bare hash.
+
+Note that `-r <root> <root>` records `sub/file`, whereas cd'ing in and running
+`jw -c .` records `./sub/file`. Both are self-consistent, but don't diff one
+against the other; pick one way and index both trees with it."))
+
         .arg(Arg::new("depth")
             .long("depth")
             .short('d')
@@ -420,6 +475,11 @@ method to do this will be implemented in the future.")
             .map(|s| s.to_string())
             .collect::<Vec<String>>()
     }) {
+        if matches.get_one::<PathBuf>("relative-to").is_some() {
+            eprintln!("--relative-to applies to writing an index, not reading one; it has no effect on --diff.");
+            exit(1);
+        }
+
         checksum_diff(
             HashAlgorithm::from(
                 matches
@@ -461,6 +521,28 @@ method to do this will be implemented in the future.")
         Some(ValueSource::CommandLine)
     );
 
+    let relative_to: Option<PathBuf> = matches.get_one::<PathBuf>("relative-to").cloned();
+
+    if let Some(base) = &relative_to {
+        // Only a checksum index records paths, so anywhere else this would be a
+        // silent no-op. Say so instead of pretending it did something.
+        if !checksum_mode {
+            eprintln!("--relative-to requires --checksum (-c) or --checksum-with (-C).");
+            exit(1);
+        }
+
+        // The strip is lexical, so a base that isn't a textual ancestor of a
+        // directory being walked would leave that directory's entries untouched
+        // and the resulting index half rewritten. Refuse up front instead.
+        if let Some(outside) = walk_dirs.iter().find(|d| !Path::new(d).starts_with(base)) {
+            eprintln!(
+                "--relative-to {:?} is not an ancestor of {:?}; both must be spelled the same way (no canonicalization is performed).",
+                base, outside
+            );
+            exit(1);
+        }
+    }
+
     let options = Options {
         live_print: *matches.get_one::<bool>("live-print").unwrap_or(&false),
         exclude: exclude_flags,
@@ -474,6 +556,7 @@ method to do this will be implemented in the future.")
         depth: *matches.get_one("depth").unwrap_or(&0),
         directories: walk_dirs,
         print_stats: *matches.get_one("stats").unwrap_or(&false),
+        relative_to,
     };
 
     if let Some(algorithm) = &options.checksum {

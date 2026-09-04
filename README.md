@@ -50,6 +50,24 @@ https://github.com/user-attachments/assets/9d959641-2fcd-41bc-b397-2d7098d59174
 
 
 
+## Diffing two copies of the same tree
+
+An index entry is identified by its path, and `jw` records paths exactly the way you typed them. That's fine when you're re-checking the same directory later, but it falls apart the moment you want to compare two copies of the same data living under different roots: `/mnt/backup1/photos/cat.jpg` and `/mnt/backup2/photos/cat.jpg` are the same bytes, but `--diff` has no way to tell, so every single entry gets reported as missing on one side and excess on the other.
+
+`--relative-to` (`-r`) fixes that by lopping a prefix off of every path before it goes into the index. Point it at the scan root and you get an index keyed by paths within the tree, which is directly comparable to any other index taken the same way:
+
+```sh
+jw -c -r /mnt/backup1 /mnt/backup1 > backup1.hf
+jw -c -r /mnt/backup2 /mnt/backup2 > backup2.hf
+jw -s -D backup1.hf backup2.hf
+```
+
+The point is that you no longer have to be standing in the directory for this to work. Previously the only way to get comparable indexes was to `cd` into each tree and scan `.`, because that's the only way `jw` would record short paths; give it an absolute path and everything came out absolute and nothing lined up. Now you can stay wherever you are, address both trees absolutely, and still get indexes that diff against each other.
+
+The prefix is stripped lexically, nothing is canonicalized, and a base that isn't an ancestor of what you're walking is rejected rather than quietly ignored. The output format itself hasn't changed at all, so indexes you already have still diff exactly the way they always did.
+
+One thing to watch: `-r <root> <root>` records `sub/file`, while the old `cd` in and scan `.` approach records `./sub/file`. Each is fine on its own, but don't diff one against the other -- index both trees the same way.
+
 ## Usage
 
 ```
@@ -80,7 +98,7 @@ Options:
           Stick to Xxh3 and just use -c unless you have a reason to use a different one.
 
           [default: xxh3]
-          [possible values: xxh3, sha224, sha256, sha384, sha512, md5]
+          [possible values: xxh3, blake3, sha224, sha256, sha384, sha512, md5]
 
   -D, --diff <file1> <file2>...
           Validate hashes from two or more files containing output from `jw --checksum`
@@ -95,6 +113,35 @@ Options:
           must specify the algorithm before -D, e.g. `jw -C sha256 -D file1 file2`
 
           If you stuck with defaults: `jw -c`, then you can just `jw -D file1 file2`
+
+  -r, --relative-to <path>
+          Record --checksum index paths relative to this path, instead of as given.
+          An index entry is identified by its path, so two indexes taken from two different
+          roots never line up under --diff; every entry looks new on both sides even when the
+          bytes are identical. Passing the scan root to --relative-to strips it back off of
+          every recorded path, making the two indexes directly comparable.
+
+            jw -c -r /mnt/backup1 /mnt/backup1 > a.hf
+            jw -c -r /mnt/backup2 /mnt/backup2 > b.hf
+            jw -s -D a.hf b.hf
+
+          The output format is unchanged, so this only affects indexes written from now on;
+          existing ones still diff exactly as they always did.
+
+          The prefix is stripped lexically, component by component. Nothing is canonicalized,
+          because jwalk records paths spelled exactly the way you typed them, symlinks and all
+          (scanning `link` records `link/f`, not `real/f`), and resolving the base would leave
+          it unable to match those. Relative and absolute paths are both fine, but the base has
+          to be spelled the same way as the directories being walked; `-r . .` works, and so
+          does `-r /mnt/x /mnt/x`, while `-r /mnt/x .` does not. A base that isn't an ancestor
+          of every directory being walked is rejected outright rather than silently ignored,
+          as is using this without --checksum/--checksum-with, where there is no index for it
+          to affect. An entry that would strip down to nothing at all (a base naming the very
+          file being hashed) keeps its path as-is, rather than being recorded as a bare hash.
+
+          Note that `-r <root> <root>` records `sub/file`, whereas cd'ing in and running
+          `jw -c .` records `./sub/file`. Both are self-consistent, but don't diff one
+          against the other; pick one way and index both trees with it.
 
   -d, --depth <limit>
           The recursion depth limit. Setting this to 1 effectively disables recursion.
